@@ -31,6 +31,7 @@ class HorarioCrear(BaseModel):
     hora_inicio: str  # formato "08:00"
     hora_fin: str     # formato "10:00"
     aula: str
+    grupo: str        
 
 class MatriculaCrear(BaseModel):
     usuario_id: str
@@ -195,7 +196,9 @@ def listar_horarios():
         cursor.execute("""
             SELECT h.id, h.dia_semana, h.hora_inicio, h.hora_fin, h.aula,
                    a.nombre AS asignatura, a.codigo AS cod_asignatura,
-                   u.nombres AS docente, u.apellidos AS apellido_docente
+                   u.nombres AS docente, u.apellidos AS apellido_docente,
+                   h.asignatura_id, h.docente_id, h.grupo
+
             FROM horarios h
             JOIN asignaturas a ON a.id = h.asignatura_id
             JOIN usuarios u ON u.id = h.docente_id
@@ -214,11 +217,11 @@ def crear_horario(horario: HorarioCrear):
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO horarios 
-                (asignatura_id, docente_id, dia_semana, hora_inicio, hora_fin, aula)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            RETURNING id, dia_semana, hora_inicio, hora_fin, aula
+                (asignatura_id, docente_id, dia_semana, hora_inicio, hora_fin, aula, grupo)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id, dia_semana, hora_inicio, hora_fin, aula, grupo
         """, (horario.asignatura_id, horario.docente_id, horario.dia_semana,
-              horario.hora_inicio, horario.hora_fin, horario.aula))
+              horario.hora_inicio, horario.hora_fin, horario.aula, horario.grupo))
         conn.commit()
         return {"mensaje": "Horario creado", "horario": cursor.fetchone()}
     except Exception as e:
@@ -290,3 +293,146 @@ def crear_matricula(matricula: MatriculaCrear):
         raise HTTPException(status_code=400, detail=str(e))
     finally:
         if conn: conn.close()
+
+# ── Actualizar Facultad ───────────────────────────────────────
+@router.put("/facultades/{facultad_id}")
+def actualizar_facultad(facultad_id: str, datos: FacultadCrear):
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE facultades SET nombre = %s, codigo = %s
+            WHERE id = %s RETURNING id, nombre, codigo
+        """, (datos.nombre, datos.codigo, facultad_id))
+        conn.commit()
+        result = cursor.fetchone()
+        if not result:
+            raise HTTPException(status_code=404, detail="Facultad no encontrada")
+        return {"mensaje": "Facultad actualizada", "facultad": result}
+    except HTTPException: raise
+    except Exception as e:
+        if conn: conn.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        if conn: conn.close()
+
+# ── Eliminar y Actualizar Programa ───────────────────────────
+@router.delete("/programas/{programa_id}")
+def eliminar_programa(programa_id: str):
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM programas WHERE id = %s RETURNING id", (programa_id,))
+        conn.commit()
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Programa no encontrado")
+        return {"mensaje": "Programa eliminado"}
+    except HTTPException: raise
+    except Exception as e:
+        if conn: conn.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        if conn: conn.close()
+
+@router.put("/programas/{programa_id}")
+def actualizar_programa(programa_id: str, datos: ProgramaCrear):
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE programas SET nombre = %s, codigo = %s, facultad_id = %s
+            WHERE id = %s RETURNING id, nombre, codigo
+        """, (datos.nombre, datos.codigo, datos.facultad_id, programa_id))
+        conn.commit()
+        result = cursor.fetchone()
+        if not result:
+            raise HTTPException(status_code=404, detail="Programa no encontrado")
+        return {"mensaje": "Programa actualizado", "programa": result}
+    except HTTPException: raise
+    except Exception as e:
+        if conn: conn.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        if conn: conn.close()
+
+# ── Eliminar y Actualizar Asignatura ─────────────────────────
+@router.delete("/asignaturas/{asignatura_id}")
+def eliminar_asignatura(asignatura_id: str):
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM asignaturas WHERE id = %s RETURNING id", (asignatura_id,))
+        conn.commit()
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Asignatura no encontrada")
+        return {"mensaje": "Asignatura eliminada"}
+    except HTTPException: raise
+    except Exception as e:
+        if conn: conn.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        if conn: conn.close()
+
+@router.put("/asignaturas/{asignatura_id}")
+def actualizar_asignatura(asignatura_id: str, datos: AsignaturaCrear):
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE asignaturas SET nombre = %s, codigo = %s, creditos = %s, programa_id = %s
+            WHERE id = %s RETURNING id, nombre, codigo, creditos
+        """, (datos.nombre, datos.codigo, datos.creditos, datos.programa_id, asignatura_id))
+        conn.commit()
+        result = cursor.fetchone()
+        if not result:
+            raise HTTPException(status_code=404, detail="Asignatura no encontrada")
+        return {"mensaje": "Asignatura actualizada", "asignatura": result}
+    except HTTPException: raise
+    except Exception as e:
+        if conn: conn.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        if conn: conn.close()
+
+# ── Actualizar Horario ────────────────────────────────────────
+@router.put("/horarios/{horario_id}")
+def actualizar_horario(horario_id: str, datos: HorarioCrear):
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE horarios SET asignatura_id = %s, docente_id = %s, dia_semana = %s,
+                hora_inicio = %s, hora_fin = %s, aula = %s, grupo = %s
+            WHERE id = %s RETURNING id, dia_semana, hora_inicio, hora_fin, aula, grupo
+        """, (datos.asignatura_id, datos.docente_id, datos.dia_semana,
+              datos.hora_inicio, datos.hora_fin, datos.aula, datos.grupo, horario_id))
+        conn.commit()
+        result = cursor.fetchone()
+        if not result:
+            raise HTTPException(status_code=404, detail="Horario no encontrado")
+        return {"mensaje": "Horario actualizado", "horario": result}
+    except HTTPException: raise
+    except Exception as e:
+        if conn: conn.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        if conn: conn.close()
+
+# ── Listar Roles ──────────────────────────────────────────────
+@router.get("/roles")
+def listar_roles():
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, nombre FROM roles ORDER BY nombre")
+        return cursor.fetchall()
+    finally:
+        if conn: conn.close()
+
