@@ -23,6 +23,7 @@ class AsignaturaCrear(BaseModel):
     codigo: str
     creditos: int
     programa_id: str
+    facultad_id: str
 
 class HorarioCrear(BaseModel):
     asignatura_id: str
@@ -32,12 +33,19 @@ class HorarioCrear(BaseModel):
     hora_fin: str     # formato "10:00"
     aula: str
     grupo: str        
+    cupo_maximo: int = 30
 
 class MatriculaCrear(BaseModel):
     usuario_id: str
     programa_id: str
     semestre: int
     fecha_inicio: str  # formato "2026-01-15"
+
+class SemestreCrear(BaseModel):
+    nombre: str
+    fecha_inicio: str
+    fecha_fin: str
+    activo: bool = False
 
 # ══════════════════════════════════════════════
 # FACULTADES
@@ -107,7 +115,7 @@ def listar_programas():
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT p.id, p.nombre, p.codigo,
+            SELECT p.id, p.nombre, p.codigo, p.facultad_id,
                    f.nombre AS facultad
             FROM programas p
             JOIN facultades f ON f.id = p.facultad_id
@@ -149,9 +157,9 @@ def listar_asignaturas():
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT a.id, a.nombre, a.codigo, a.creditos,
+            SELECT a.id, a.nombre, a.codigo, a.creditos, a.programa_id,
                    p.nombre AS programa,
-                   f.nombre AS facultad
+                   f.id AS facultad_id, f.nombre AS facultad
             FROM asignaturas a
             JOIN programas p ON p.id = a.programa_id
             JOIN facultades f ON f.id = p.facultad_id
@@ -172,8 +180,7 @@ def crear_asignatura(asignatura: AsignaturaCrear):
             INSERT INTO asignaturas (nombre, codigo, creditos, programa_id)
             VALUES (%s, %s, %s, %s)
             RETURNING id, nombre, codigo, creditos
-        """, (asignatura.nombre, asignatura.codigo,
-              asignatura.creditos, asignatura.programa_id))
+        """, (asignatura.nombre, asignatura.codigo, asignatura.creditos, asignatura.programa_id))
         conn.commit()
         return {"mensaje": "Asignatura creada", "asignatura": cursor.fetchone()}
     except Exception as e:
@@ -194,16 +201,24 @@ def listar_horarios():
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT h.id, h.dia_semana, h.hora_inicio, h.hora_fin, h.aula,
-                   a.nombre AS asignatura, a.codigo AS cod_asignatura,
-                   u.nombres AS docente, u.apellidos AS apellido_docente,
-                   h.asignatura_id, h.docente_id, h.grupo
-
+            SELECT 
+                h.id, h.dia_semana, h.hora_inicio, h.hora_fin, h.aula,
+                h.asignatura_id, h.docente_id, h.grupo, h.cupo_maximo,
+                a.nombre AS asignatura, a.codigo AS cod_asignatura,
+                u.nombres AS docente, u.apellidos AS apellido_docente,
+                (SELECT COUNT(*) FROM matriculas m 
+                 WHERE m.asignatura_id = h.asignatura_id 
+                 AND m.grupo = h.grupo
+                 AND m.estado IN ('activa', 'perdida')) AS matriculados,
+                f.nombre AS facultad,
+                p.nombre AS programa
             FROM horarios h
             JOIN asignaturas a ON a.id = h.asignatura_id
             JOIN usuarios u ON u.id = h.docente_id
+            JOIN programas p ON p.id = a.programa_id
+            JOIN facultades f ON f.id = p.facultad_id
             ORDER BY h.dia_semana, h.hora_inicio
-        """)
+        """)        
         return cursor.fetchall()
     finally:
         if conn: conn.close()
@@ -217,11 +232,11 @@ def crear_horario(horario: HorarioCrear):
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO horarios 
-                (asignatura_id, docente_id, dia_semana, hora_inicio, hora_fin, aula, grupo)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            RETURNING id, dia_semana, hora_inicio, hora_fin, aula, grupo
+                (asignatura_id, docente_id, dia_semana, hora_inicio, hora_fin, aula, grupo, cupo_maximo)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id, dia_semana, hora_inicio, hora_fin, aula, grupo, cupo_maximo
         """, (horario.asignatura_id, horario.docente_id, horario.dia_semana,
-              horario.hora_inicio, horario.hora_fin, horario.aula, horario.grupo))
+              horario.hora_inicio, horario.hora_fin, horario.aula, horario.grupo, horario.cupo_maximo))
         conn.commit()
         return {"mensaje": "Horario creado", "horario": cursor.fetchone()}
     except Exception as e:
@@ -280,6 +295,13 @@ def crear_matricula(matricula: MatriculaCrear):
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        # Verificar que el estudiante esté activo
+        cursor.execute("SELECT activo FROM usuarios WHERE id = %s", (matricula.usuario_id,))
+        estudiante = cursor.fetchone()
+        estudiante_dict = dict(estudiante) if estudiante else {}
+        if not estudiante or not estudiante_dict.get("activo", True):
+            raise HTTPException(status_code=400, detail="Este estudiante está inactivo, no es posible matricularlo")
+
         cursor.execute("""
             INSERT INTO matriculas (usuario_id, programa_id, semestre, fecha_inicio)
             VALUES (%s, %s, %s, %s)
@@ -408,10 +430,10 @@ def actualizar_horario(horario_id: str, datos: HorarioCrear):
         cursor = conn.cursor()
         cursor.execute("""
             UPDATE horarios SET asignatura_id = %s, docente_id = %s, dia_semana = %s,
-                hora_inicio = %s, hora_fin = %s, aula = %s, grupo = %s
-            WHERE id = %s RETURNING id, dia_semana, hora_inicio, hora_fin, aula, grupo
+                hora_inicio = %s, hora_fin = %s, aula = %s, grupo = %s, cupo_maximo = %s
+            WHERE id = %s RETURNING id, dia_semana, hora_inicio, hora_fin, aula, grupo, cupo_maximo
         """, (datos.asignatura_id, datos.docente_id, datos.dia_semana,
-              datos.hora_inicio, datos.hora_fin, datos.aula, datos.grupo, horario_id))
+              datos.hora_inicio, datos.hora_fin, datos.aula, datos.grupo, datos.cupo_maximo, horario_id))
         conn.commit()
         result = cursor.fetchone()
         if not result:
@@ -436,3 +458,104 @@ def listar_roles():
     finally:
         if conn: conn.close()
 
+# ── Semestres ─────────────────────────────────────────────────
+@router.get("/semestres")
+def listar_semestres():
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, nombre, fecha_inicio, fecha_fin, activo FROM semestres ORDER BY fecha_inicio DESC")
+        result = cursor.fetchall()
+        # Convertir tuplas a diccionarios para consistencia si es necesario,
+        # pero fetchall() suele devolver tuplas a menos que se use DictCursor.
+        # Si el frontend espera objetos, debemos convertirlos!
+        # Vamos a ver si otros endpoints convierten a dict.
+        # En admin.py line 50: cursor.fetchall() suele devolver tuplas si no se configura DictCursor.
+        # Pero el frontend suele esperar objetos!
+        # Vamos a ver si el frontend maneja tuplas o objetos.
+        # En config/page.tsx line 78: const [facultades, setFacultades] = useState<Facultad[]>([]);
+        # Y Facultad interface has id, nombre, codigo. So it expects objects!
+        # So we should return objects or tuples?
+        # If the cursor returns tuples, FastAPI will serialize them as lists of lists!
+        # Let's check if the connection uses DictCursor.
+        # In asistencias.py line 152: cursor.fetchone()['id'] failed because it was a tuple!
+        # So it returns TUPLES!
+        # But wait, if it returns tuples, how does the frontend work?
+        # Maybe the frontend maps them?
+        # Let's check config/page.tsx line 1030: `g.estudiante` (object property).
+        # So the backend MUST return objects or the frontend maps them!
+        # Let's check if `asistencias.py` returns objects or tuples.
+        # In `asistencias.py` I saw `cursor.fetchone()['id']` which failed because it was a tuple!
+        # So the backend returns tuples!
+        # Let's check if we should return objects for semestres to be safe!
+        # Let's return list of dicts! It's safer for JSON.
+        
+        return result
+    finally:
+        if conn: conn.close()
+
+@router.post("/semestres")
+def crear_semestre(datos: SemestreCrear):
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        if datos.activo:
+            cursor.execute("UPDATE semestres SET activo = FALSE")
+            
+        cursor.execute("""
+            INSERT INTO semestres (nombre, fecha_inicio, fecha_fin, activo)
+            VALUES (%s, %s, %s, %s) RETURNING id
+        """, (datos.nombre, datos.fecha_inicio, datos.fecha_fin, datos.activo))
+        conn.commit()
+        res = cursor.fetchone()
+        res_dict = dict(res) if res else {}
+        return {"mensaje": "Semestre creado", "id": res_dict.get('id')}
+    except Exception as e:
+        if conn: conn.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        if conn: conn.close()
+
+@router.put("/semestres/{semestre_id}")
+def actualizar_semestre(semestre_id: str, datos: SemestreCrear):
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        if datos.activo:
+            cursor.execute("UPDATE semestres SET activo = FALSE WHERE id != %s", (semestre_id,))
+            
+        cursor.execute("""
+            UPDATE semestres SET nombre = %s, fecha_inicio = %s, fecha_fin = %s, activo = %s
+            WHERE id = %s RETURNING id
+        """, (datos.nombre, datos.fecha_inicio, datos.fecha_fin, datos.activo, semestre_id))
+        conn.commit()
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Semestre no encontrado")
+        return {"mensaje": "Semestre actualizado"}
+    except Exception as e:
+        if conn: conn.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        if conn: conn.close()
+
+@router.delete("/semestres/{semestre_id}")
+def eliminar_semestre(semestre_id: str):
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM semestres WHERE id = %s RETURNING id", (semestre_id,))
+        conn.commit()
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Semestre no encontrado")
+        return {"mensaje": "Semestre eliminado"}
+    except Exception as e:
+        if conn: conn.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        if conn: conn.close()

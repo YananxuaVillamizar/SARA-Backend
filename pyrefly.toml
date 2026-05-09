@@ -1,0 +1,3 @@
+# Pyrefly configuration
+# Points to the virtual environment so Pyrefly can find fastapi, pydantic, etc.
+python_interpreter = "venv/Scripts/python.exe"

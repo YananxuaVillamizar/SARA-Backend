@@ -128,6 +128,12 @@ def actualizar_usuario(num_doc: str, datos: UsuarioActualizar):
         if datos.activo is not None:
             campos.append("activo = %s")
             valores.append(datos.activo)
+            # Si se desactiva un usuario, se eliminan sus matrículas automáticamente
+            if datos.activo is False:
+                cursor.execute("""
+                    DELETE FROM matriculas 
+                    WHERE usuario_id = (SELECT id FROM usuarios WHERE num_doc = %s)
+                """, (num_doc,))
 
         if not campos:
             raise HTTPException(status_code=400, detail="No hay datos para actualizar")

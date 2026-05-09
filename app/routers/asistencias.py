@@ -1,7 +1,24 @@
 from fastapi import APIRouter, HTTPException
 from app.database import get_connection
+from pydantic import BaseModel
+from typing import Optional
+from datetime import datetime
 
 router = APIRouter()
+
+class AsistenciaCrear(BaseModel):
+    horario_id: str
+    usuario_id: str
+    hora_entrada: Optional[datetime] = None
+    hora_salida: Optional[datetime] = None
+    metodo_verificacion: str
+    estado: str
+    observacion: Optional[str] = None
+
+class AsistenciaUpdate(BaseModel):
+    estado: Optional[str] = None
+    observacion: Optional[str] = None
+    hora_salida: Optional[datetime] = None
 
 @router.get("/reporte/{num_doc}")
 def reporte_estudiante(num_doc: str):
@@ -63,6 +80,242 @@ def reporte_estudiante(num_doc: str):
     finally:
         if conn:
             conn.close()
+
+@router.get("/")
+def listar_asistencias(docente_id: Optional[str] = None, usuario_id: Optional[str] = None):
+    """Lista los registros de asistencia, permitiendo filtrar por docente o estudiante"""
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # 1. Obtener semestre activo
+        cursor.execute("SELECT fecha_inicio FROM semestres WHERE activo = TRUE")
+        semestre = cursor.fetchone()
+        fecha_inicio_semestre = dict(semestre)['fecha_inicio'] if semestre else None
+        
+        # 2. Consulta principal (uniones para obtener todos los datos necesarios)
+        query = """
+            SELECT 
+                s.id AS sesion_id,
+                s.fecha,
+                h.id AS horario_id,
+                s.docente_asistio,
+                asig.nombre AS asignatura,
+                asig.codigo AS cod_asignatura,
+                doc.nombres AS nombre_docente,
+                doc.apellidos AS apellido_docente,
+                u.nombres AS nombre_estudiante,
+                u.apellidos AS apellido_estudiante,
+                u.num_doc,
+                COALESCE(a.estado, 'inasistencia') AS estado,
+                COALESCE(a.metodo_verificacion, 'N/A') AS metodo_verificacion,
+                a.hora_entrada,
+                a.hora_salida,
+                h.grupo,
+                h.aula,
+                h.dia_semana,
+                h.hora_inicio,
+                h.hora_fin,
+                prog.nombre AS programa,
+                fac.nombre AS facultad
+            FROM horarios h
+            JOIN asignaturas asig ON asig.id = h.asignatura_id
+            JOIN usuarios doc ON doc.id = h.docente_id
+            JOIN matriculas m ON m.asignatura_id = asig.id AND m.grupo = h.grupo
+            JOIN usuarios u ON u.id = m.usuario_id
+            JOIN programas prog ON prog.id = asig.programa_id
+            JOIN facultades fac ON fac.id = prog.facultad_id
+            LEFT JOIN sesiones_clase s ON s.horario_id = h.id
+            LEFT JOIN asistencias a ON a.usuario_id = u.id AND a.horario_id = s.horario_id AND date(a.hora_entrada) = s.fecha
+            JOIN roles r ON r.id = u.rol_id
+            WHERE r.nombre = 'Estudiante'
+        """
+        params = []
+        
+        if docente_id:
+            query += " AND h.docente_id = %s"
+            params.append(docente_id)
+            
+        if usuario_id:
+            query += " AND m.usuario_id = %s"
+            params.append(usuario_id)
+            
+        query += " ORDER BY s.fecha DESC, u.apellidos ASC"
+        
+        cursor.execute(query, params)
+        result = cursor.fetchall()
+        
+        # 3. Generar sesiones para la semana actual si no existen
+        import datetime
+        now = datetime.datetime.now()
+        current_date = now.date()
+        monday_of_current_week = current_date - datetime.timedelta(days=current_date.weekday())
+        
+        dias_map = {
+            'lunes': 0, 'martes': 1, 'miercoles': 2,
+            'jueves': 3, 'viernes': 4, 'sabado': 5, 'domingo': 6
+        }
+        
+        from collections import defaultdict
+        grouped_by_horario = defaultdict(list)
+        for r in result:
+            grouped_by_horario[dict(r)['horario_id']].append(dict(r))
+            
+        synthetic_rows = []
+        for h_id, rows in grouped_by_horario.items():
+            dates = set()
+            for r in rows:
+                if r.get('fecha'):
+                    dates.add(r['fecha'])
+                    
+            first_row = rows[0]
+            dia_sem = first_row.get('dia_semana')
+            if dia_sem and dia_sem.lower() in dias_map:
+                offset = dias_map[dia_sem.lower()]
+                expected_date = monday_of_current_week + datetime.timedelta(days=offset)
+                
+                if expected_date not in dates:
+                    students = {}
+                    for r in rows:
+                        if r.get('num_doc'):
+                            students[r['num_doc']] = r
+                            
+                    for num_doc, s_data in students.items():
+                        new_row = dict(s_data)
+                        new_row['sesion_id'] = None
+                        new_row['fecha'] = expected_date
+                        new_row['docente_asistio'] = False
+                        new_row['estado'] = 'N/A'
+                        new_row['metodo_verificacion'] = 'N/A'
+                        new_row['hora_entrada'] = None
+                        new_row['hora_salida'] = None
+                        synthetic_rows.append(new_row)
+                        
+        combined_result = [dict(r) for r in result] + synthetic_rows
+        
+        # 3. Calcular semanas
+        registros = []
+        
+        for d in combined_result:
+            if fecha_inicio_semestre and d.get('fecha'):
+                f = d['fecha']
+                if isinstance(f, str):
+                    f = datetime.strptime(f, "%Y-%m-%d").date()
+                
+                s_inicio = fecha_inicio_semestre
+                if isinstance(s_inicio, str):
+                    s_inicio = datetime.strptime(s_inicio, "%Y-%m-%d").date()
+                    
+                dias = (f - s_inicio).days
+                d['semana'] = (dias // 7) + 1
+            else:
+                d['semana'] = 1 # Default if no semester or date
+                
+            registros.append(d)
+            
+        return registros
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error en backend: {str(e)}")
+    finally:
+        if conn: conn.close()
+
+@router.post("/", status_code=201)
+def crear_asistencia(asistencia: AsistenciaCrear):
+    """Crea un nuevo registro de asistencia"""
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Validar horario
+        cursor.execute("SELECT dia_semana, hora_inicio, hora_fin FROM horarios WHERE id = %s", (asistencia.horario_id,))
+        horario = cursor.fetchone()
+        if not horario:
+            raise HTTPException(status_code=404, detail="Horario no encontrado")
+            
+        import datetime
+        now = datetime.datetime.now()
+        
+        dias_map = {
+            'lunes': 0, 'martes': 1, 'miercoles': 2,
+            'jueves': 3, 'viernes': 4, 'sabado': 5, 'domingo': 6
+        }
+        horario_dict = dict(horario)
+        target_day = dias_map.get(horario_dict['dia_semana'].lower())
+        
+        if now.weekday() != target_day:
+            raise HTTPException(status_code=400, detail="No puedes registrar asistencia fuera del día de clase")
+            
+        current_time = now.time()
+        h_inicio = horario_dict['hora_inicio']
+        h_fin = horario_dict['hora_fin']
+        
+        # Convertir a string para comparar o comparar directamente si son objetos time
+        # h_inicio y h_fin suelen ser objetos time o strings dependiendo de la BD.
+        # Vamos a asumir que son objetos time.
+        if current_time < h_inicio or current_time > h_fin:
+            raise HTTPException(status_code=400, detail="No puedes registrar asistencia fuera de las horas de clase")
+            
+        # Validar metodo_verificacion
+        if asistencia.metodo_verificacion not in ['Biometría', 'Firma Electrónica']:
+            raise HTTPException(status_code=400, detail="Método de verificación inválido")
+            
+        cursor.execute("""
+            INSERT INTO asistencias (
+                horario_id, usuario_id, hora_entrada, hora_salida,
+                metodo_verificacion, estado, observacion
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+        """, (
+            asistencia.horario_id, asistencia.usuario_id,
+            asistencia.hora_entrada, asistencia.hora_salida,
+            asistencia.metodo_verificacion, asistencia.estado, asistencia.observacion
+        ))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=500, detail="Error al obtener el ID generado")
+        id_nuevo = row[0]
+        conn.commit()
+        return {"id": id_nuevo, "mensaje": "Asistencia registrada"}
+    finally:
+        if conn: conn.close()
+
+@router.put("/{asistencia_id}")
+def actualizar_asistencia(asistencia_id: str, datos: AsistenciaUpdate):
+    """Actualiza un registro de asistencia"""
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        update_fields = []
+        params: list = []
+        
+        if datos.estado is not None:
+            update_fields.append("estado = %s")
+            params.append(datos.estado)
+        if datos.observacion is not None:
+            update_fields.append("observacion = %s")
+            params.append(datos.observacion)
+        if datos.hora_salida is not None:
+            update_fields.append("hora_salida = %s")
+            params.append(datos.hora_salida)
+            
+        if not update_fields:
+            raise HTTPException(status_code=400, detail="No se enviaron campos para actualizar")
+            
+        params.append(asistencia_id)
+        
+        query = f"UPDATE asistencias SET {', '.join(update_fields)} WHERE id = %s"
+        
+        cursor.execute(query, params)
+        conn.commit()
+        return {"mensaje": "Asistencia actualizada"}
+    finally:
+        if conn: conn.close()
 
 @router.get("/docente/{num_doc}")
 def reporte_docente(num_doc: str):

@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import auth, usuarios, asistencias, admin, contingencias
+from app.routers import auth, usuarios, asistencias, admin, contingencias, matriculas
 
 # Esto crea la aplicación FastAPI — es el restaurante
 app = FastAPI(
@@ -26,6 +26,7 @@ app.include_router(usuarios.router,    prefix="/usuarios",    tags=["Usuarios"])
 app.include_router(asistencias.router, prefix="/asistencias", tags=["Asistencias"])
 app.include_router(admin.router, prefix="/admin", tags=["Administración"])
 app.include_router(contingencias.router, prefix="/contingencias", tags=["Contingencias y Sesiones"])
+app.include_router(matriculas.router, prefix="/matriculas", tags=["Matrículas"])
 
 # Endpoint raíz — solo para verificar que la API está viva
 @app.get("/")
