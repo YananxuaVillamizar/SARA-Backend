@@ -23,8 +23,12 @@ class UsuarioActualizar(BaseModel):
     """Datos que se pueden modificar de un usuario"""
     nombres: Optional[str] = None
     apellidos: Optional[str] = None
+    tipo_doc: Optional[str] = None
+    num_doc: Optional[str] = None
     email: Optional[str] = None
+    password: Optional[str] = None
     activo: Optional[bool] = None
+    autoriza_biometria: Optional[bool] = None
 
 # ── Endpoints ─────────────────────────────────────────────────
 @router.get("/")
@@ -35,7 +39,7 @@ def listar_usuarios():
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT u.id, u.nombres, u.apellidos, u.num_doc,
+            SELECT u.id, u.nombres, u.apellidos, u.tipo_doc, u.num_doc,
                    u.email, u.activo, u.autoriza_biometria,
                    r.nombre as rol
             FROM usuarios u
@@ -113,8 +117,8 @@ def actualizar_usuario(num_doc: str, datos: UsuarioActualizar):
         conn = get_connection()
         cursor = conn.cursor()
 
-        campos = []
-        valores = []
+        campos: list[str] = []
+        valores: list = []
 
         if datos.nombres is not None:
             campos.append("nombres = %s")
@@ -125,13 +129,36 @@ def actualizar_usuario(num_doc: str, datos: UsuarioActualizar):
         if datos.email is not None:
             campos.append("email = %s")
             valores.append(datos.email)
+        if datos.tipo_doc is not None:
+            campos.append("tipo_doc = %s")
+            valores.append(datos.tipo_doc)
+        if datos.num_doc is not None:
+            campos.append("num_doc = %s")
+            valores.append(datos.num_doc)
+        if datos.password is not None:
+            campos.append("password_hash = %s")
+            password_hash = pwd_context.hash(datos.password)
+            valores.append(password_hash)
         if datos.activo is not None:
             campos.append("activo = %s")
             valores.append(datos.activo)
-            # Si se desactiva un usuario, se eliminan sus matrículas automáticamente
+            # Si se desactiva un usuario, se eliminan sus matrículas y horarios automáticamente
             if datos.activo is False:
                 cursor.execute("""
                     DELETE FROM matriculas 
+                    WHERE usuario_id = (SELECT id FROM usuarios WHERE num_doc = %s)
+                """, (num_doc,))
+                cursor.execute("""
+                    DELETE FROM horarios 
+                    WHERE docente_id = (SELECT id FROM usuarios WHERE num_doc = %s)
+                """, (num_doc,))
+        if datos.autoriza_biometria is not None:
+            campos.append("autoriza_biometria = %s")
+            valores.append(datos.autoriza_biometria)
+            # Si se revoca la autorización, se elimina la huella automáticamente por privacidad de datos
+            if datos.autoriza_biometria is False:
+                cursor.execute("""
+                    DELETE FROM templates_biometricos 
                     WHERE usuario_id = (SELECT id FROM usuarios WHERE num_doc = %s)
                 """, (num_doc,))
 

@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from app.database import get_connection
 from pydantic import BaseModel
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 
 router = APIRouter()
 
@@ -43,26 +43,32 @@ def reporte_estudiante(num_doc: str):
         # Luego buscar su reporte (puede estar vacío si no hay sesiones)
         cursor.execute("""
             SELECT
-                nombre_estudiante,
-                apellido_estudiante,
-                asignatura,
-                COUNT(*) FILTER (WHERE docente_asistio = TRUE) AS clases_dictadas,
-                COUNT(*) FILTER (WHERE docente_asistio = TRUE
-                    AND estado_estudiante IN ('presente','tarde')) AS asistencias,
-                COUNT(*) FILTER (WHERE docente_asistio = TRUE
-                    AND estado_estudiante = 'ausente') AS inasistencias,
+                u.nombres AS nombre_estudiante,
+                u.apellidos AS apellido_estudiante,
+                asig.nombre AS asignatura,
+                h.grupo,
+                COUNT(*) FILTER (WHERE s.docente_asistio = TRUE) AS clases_dictadas,
+                COUNT(*) FILTER (WHERE s.docente_asistio = TRUE
+                    AND COALESCE(a.estado, 'ausente') IN ('presente','tarde')) AS asistencias,
+                COUNT(*) FILTER (WHERE s.docente_asistio = TRUE
+                    AND COALESCE(a.estado, 'ausente') = 'ausente') AS inasistencias,
                 CASE
-                    WHEN COUNT(*) FILTER (WHERE docente_asistio = TRUE) = 0 THEN 0
+                    WHEN COUNT(*) FILTER (WHERE s.docente_asistio = TRUE) = 0 THEN 0
                     ELSE ROUND(
-                        COUNT(*) FILTER (WHERE docente_asistio = TRUE
-                            AND estado_estudiante IN ('presente','tarde'))
+                        COUNT(*) FILTER (WHERE s.docente_asistio = TRUE
+                            AND COALESCE(a.estado, 'ausente') IN ('presente','tarde'))
                         * 100.0 /
-                        COUNT(*) FILTER (WHERE docente_asistio = TRUE)
+                        COUNT(*) FILTER (WHERE s.docente_asistio = TRUE)
                     , 1)
                 END AS porcentaje_asistencia
-            FROM reporte_asistencia
-            WHERE num_doc = %s
-            GROUP BY nombre_estudiante, apellido_estudiante, asignatura
+            FROM sesiones_clase s
+            JOIN horarios h ON h.id = s.horario_id
+            JOIN asignaturas asig ON asig.id = h.asignatura_id
+            JOIN matriculas m ON m.asignatura_id = asig.id AND m.grupo = h.grupo
+            JOIN usuarios u ON u.id = m.usuario_id
+            LEFT JOIN asistencias a ON a.horario_id = h.id AND a.usuario_id = u.id AND DATE(a.hora_entrada) = s.fecha
+            WHERE u.num_doc = %s
+            GROUP BY u.nombres, u.apellidos, asig.nombre, h.grupo
         """, (num_doc,))
 
         reporte = cursor.fetchall()
@@ -118,7 +124,8 @@ def listar_asistencias(docente_id: Optional[str] = None, usuario_id: Optional[st
                 h.hora_inicio,
                 h.hora_fin,
                 prog.nombre AS programa,
-                fac.nombre AS facultad
+                fac.nombre AS facultad,
+                s.aula AS aula_sesion
             FROM horarios h
             JOIN asignaturas asig ON asig.id = h.asignatura_id
             JOIN usuarios doc ON doc.id = h.docente_id
@@ -147,10 +154,9 @@ def listar_asistencias(docente_id: Optional[str] = None, usuario_id: Optional[st
         result = cursor.fetchall()
         
         # 3. Generar sesiones para la semana actual si no existen
-        import datetime
-        now = datetime.datetime.now()
+        now = datetime.now()
         current_date = now.date()
-        monday_of_current_week = current_date - datetime.timedelta(days=current_date.weekday())
+        monday_of_current_week = current_date - timedelta(days=current_date.weekday())
         
         dias_map = {
             'lunes': 0, 'martes': 1, 'miercoles': 2,
@@ -173,7 +179,7 @@ def listar_asistencias(docente_id: Optional[str] = None, usuario_id: Optional[st
             dia_sem = first_row.get('dia_semana')
             if dia_sem and dia_sem.lower() in dias_map:
                 offset = dias_map[dia_sem.lower()]
-                expected_date = monday_of_current_week + datetime.timedelta(days=offset)
+                expected_date = monday_of_current_week + timedelta(days=offset)
                 
                 if expected_date not in dates:
                     students = {}
@@ -236,8 +242,7 @@ def crear_asistencia(asistencia: AsistenciaCrear):
         if not horario:
             raise HTTPException(status_code=404, detail="Horario no encontrado")
             
-        import datetime
-        now = datetime.datetime.now()
+        now = datetime.now()
         
         dias_map = {
             'lunes': 0, 'martes': 1, 'miercoles': 2,
@@ -341,6 +346,7 @@ def reporte_docente(num_doc: str):
             SELECT
                 doc.nombres, doc.apellidos,
                 asig.nombre AS asignatura,
+                h.grupo,
                 COUNT(*) AS total_sesiones,
                 COUNT(*) FILTER (WHERE s.docente_asistio = TRUE) AS sesiones_dictadas,
                 COUNT(*) FILTER (WHERE s.docente_asistio = FALSE) AS inasistencias,
@@ -353,7 +359,7 @@ def reporte_docente(num_doc: str):
             JOIN asignaturas asig ON asig.id = h.asignatura_id
             JOIN usuarios doc ON doc.id = h.docente_id
             WHERE doc.num_doc = %s
-            GROUP BY doc.nombres, doc.apellidos, asig.nombre
+            GROUP BY doc.nombres, doc.apellidos, asig.nombre, h.grupo
         """, (num_doc,))
 
         reporte = cursor.fetchall()
