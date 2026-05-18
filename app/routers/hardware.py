@@ -35,26 +35,21 @@ class RegistrarAsistenciaRequest(BaseModel):
     aula: Optional[str] = None  # Para docentes
 
 
-
 def obtener_siguiente_id_disponible():
     """
     Obtiene el siguiente ID disponible en la tabla templates_biometricos
     Busca desde ID 1 hasta 150 y retorna el primero que está libre
-    
-    Retorna:
-    - ID disponible (1-150)
-    - None si no hay IDs disponibles
     """
     conn = None
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Buscar IDs que ya están ocupados
+        # Obtener todos los sensor_id que ya están ocupados
         cursor.execute("""
-            SELECT DISTINCT sensor_id FROM templates_biometricos
+            SELECT sensor_id FROM templates_biometricos
             WHERE sensor_id IS NOT NULL
-            ORDER BY sensor_id
+            ORDER BY sensor_id ASC
         """)
         
         ids_ocupados = set()
@@ -69,21 +64,21 @@ def obtener_siguiente_id_disponible():
             if sensor_id not in ids_ocupados:
                 return sensor_id
         
-        return None  # No hay IDs disponibles
+        # No hay IDs disponibles
+        return None
         
     except Exception as e:
-        print(f"Error obteniendo siguiente ID: {str(e)}")
+        print(f"Error en obtener_siguiente_id_disponible: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return None
     finally:
         if conn:
             conn.close()
 
-
-
 # ══════════════════════════════════════════════
 # ENDPOINT 1: BUSCAR USUARIO
 # ══════════════════════════════════════════════
-
 @router.post("/usuario/buscar")
 def buscar_usuario(request: BuscarUsuarioRequest):
     """
@@ -105,10 +100,10 @@ def buscar_usuario(request: BuscarUsuarioRequest):
         
         # Buscar el usuario y su rol
         cursor.execute("""
-            SELECT u.id, u.nombres, u.apellidos, u.autoriza_biometria, r.nombre as rol
+            SELECT u.id, u.nombres, u.apellidos, u.autoriza_biometria, r.nombre as rol, u.activo
             FROM usuarios u
             JOIN roles r ON r.id = u.rol_id
-            WHERE u.num_doc = %s AND u.activo = true
+            WHERE u.num_doc = %s
         """, (request.num_doc,))
         
         usuario: Any = cursor.fetchone()
@@ -117,6 +112,28 @@ def buscar_usuario(request: BuscarUsuarioRequest):
             return {
                 "existe": False,
                 "mensaje": "Usuario no encontrado"
+            }
+        
+        # Verificar estado del usuario
+        activo = usuario['activo']
+        autoriza = usuario['autoriza_biometria']
+        
+        if not activo and not autoriza:
+            return {
+                "existe": False,
+                "mensaje": "Este usuario no se encuentra activo ni autoriza biometria"
+            }
+        
+        if not activo:
+            return {
+                "existe": False,
+                "mensaje": "Este usuario no se encuentra activo"
+            }
+        
+        if not autoriza:
+            return {
+                "existe": False,
+                "mensaje": "Este usuario no autoriza biometria"
             }
         
         nombre_completo = f"{usuario['nombres']} {usuario['apellidos']}"
@@ -134,7 +151,6 @@ def buscar_usuario(request: BuscarUsuarioRequest):
     finally:
         if conn:
             conn.close()
-
 
 @router.get("/sensor/id-disponible")
 def obtener_id_disponible():
@@ -172,14 +188,12 @@ def notificar_registro_completado(request: NotificarRegistroRequest):
     """
     FLUJO REGISTRO: El ESP32 notifica que la huella fue registrada en el sensor
     
-    Requiere:
-    - num_doc: documento del usuario
-    - sensor_id: ID asignado en el sensor (enviado en el body)
-    
     Guarda la relación entre usuario y su ID en el sensor
     """
     conn = None
     try:
+        print(f"[DEBUG] Recibido: num_doc={request.num_doc}, sensor_id={request.sensor_id}")
+        
         conn = get_connection()
         cursor = conn.cursor()
         
@@ -192,20 +206,24 @@ def notificar_registro_completado(request: NotificarRegistroRequest):
         usuario: Any = cursor.fetchone()
         
         if usuario is None:
+            print(f"[ERROR] Usuario no encontrado: {request.num_doc}")
             raise HTTPException(status_code=404, detail="Usuario no encontrado")
         
         usuario_id = usuario['id']
+        print(f"[DEBUG] Usuario ID: {usuario_id}")
         
         # Verificar si el usuario ya tiene una huella registrada
         cursor.execute("""
-            SELECT id FROM templates_biometricos
+            SELECT id, sensor_id FROM templates_biometricos
             WHERE usuario_id = %s
         """, (usuario_id,))
         
         template_existente: Any = cursor.fetchone()
         
         if template_existente:
-            # Actualizar (en caso de re-registro)
+            print(f"[DEBUG] Template existente encontrado. Actualizando sensor_id de {template_existente['sensor_id']} a {request.sensor_id}")
+            
+            # Eliminar la huella anterior del sensor (opcional, por ahora solo actualiza)
             cursor.execute("""
                 UPDATE templates_biometricos
                 SET sensor_id = %s,
@@ -213,6 +231,8 @@ def notificar_registro_completado(request: NotificarRegistroRequest):
                 WHERE usuario_id = %s
             """, (request.sensor_id, usuario_id))
         else:
+            print(f"[DEBUG] Creando nuevo registro en templates_biometricos")
+            
             # Insertar nuevo registro
             cursor.execute("""
                 INSERT INTO templates_biometricos
@@ -221,6 +241,7 @@ def notificar_registro_completado(request: NotificarRegistroRequest):
             """, (usuario_id, request.sensor_id))
         
         conn.commit()
+        print(f"[DEBUG] Registro guardado exitosamente")
         
         return {
             "exito": True,
@@ -233,6 +254,9 @@ def notificar_registro_completado(request: NotificarRegistroRequest):
     except Exception as e:
         if conn:
             conn.rollback()
+        print(f"[ERROR] Exception en notificar_registro_completado: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:
@@ -263,9 +287,11 @@ def obtener_datos_usuario(request: ObtenerDatosUsuarioRequest):
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT u.id, u.nombres, u.apellidos, u.num_doc, u.email, r.nombre as rol
+            SELECT u.id, u.nombres, u.apellidos, u.num_doc, u.email, r.nombre as rol,
+                COALESCE(t.sensor_id, -1) as sensor_id
             FROM usuarios u
             JOIN roles r ON r.id = u.rol_id
+            LEFT JOIN templates_biometricos t ON t.usuario_id = u.id
             WHERE u.num_doc = %s AND u.activo = true
         """, (request.num_doc,))
         
@@ -280,13 +306,14 @@ def obtener_datos_usuario(request: ObtenerDatosUsuarioRequest):
         nombre_completo = f"{usuario['nombres']} {usuario['apellidos']}"
         
         return {
-            "existe": True,
-            "id": usuario['id'],
-            "nombre_completo": nombre_completo,
-            "num_doc": usuario['num_doc'],
-            "email": usuario['email'],
-            "rol": usuario['rol']
-        }
+    "existe": True,
+    "id": usuario['id'],
+    "nombre_completo": nombre_completo,
+    "num_doc": usuario['num_doc'],
+    "email": usuario['email'],
+    "rol": usuario['rol'],
+    "sensor_id": usuario['sensor_id']
+    }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
