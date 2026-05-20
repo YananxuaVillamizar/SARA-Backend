@@ -114,6 +114,8 @@ def listar_asistencias(docente_id: Optional[str] = None, usuario_id: Optional[st
                 u.nombres AS nombre_estudiante,
                 u.apellidos AS apellido_estudiante,
                 u.num_doc,
+                u.tipo_doc,
+                doc.tipo_doc AS docente_tipo_doc,
                 COALESCE(a.estado, 'inasistencia') AS estado,
                 COALESCE(a.metodo_verificacion, 'N/A') AS metodo_verificacion,
                 a.hora_entrada,
