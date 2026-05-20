@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from app.database import get_connection
-from typing import Optional
+from typing import Optional, Any
 
 router = APIRouter()
 
@@ -45,7 +45,7 @@ def listar_matriculas():
             FROM matriculas m
             JOIN usuarios u ON u.id = m.usuario_id
             JOIN programas p ON p.id = m.programa_id
-            LEFT JOIN facultades f ON f.id = p.facultad_id
+            LEFT JOIN facultades f ON f.id = m.facultad_id
             LEFT JOIN asignaturas a ON a.id = m.asignatura_id
             ORDER BY u.apellidos, a.nombre
         """)
@@ -96,17 +96,24 @@ def crear_matricula(datos: MatriculaCrear):
         res = cursor.fetchone()
 
         if res:
-            if res['matriculados'] >= res['cupo_maximo']:
-                raise HTTPException(status_code=400, detail=f"El grupo {datos.grupo} ya alcanzó su cupo máximo ({res['cupo_maximo']})")
+            res_dict: Any = res
+            cupo_maximo = res_dict['cupo_maximo']
+            matriculados = res_dict['matriculados']
+            if matriculados >= cupo_maximo:
+                raise HTTPException(status_code=400, detail=f"El grupo {datos.grupo} ya alcanzó su cupo máximo ({cupo_maximo})")
 
         cursor.execute("""
             INSERT INTO matriculas
-                (usuario_id, programa_id, asignatura_id, grupo, semestre, estado, fecha_inicio)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                (usuario_id, programa_id, asignatura_id, grupo, semestre, estado, fecha_inicio, facultad_id)
+            VALUES (
+                %s, %s, %s, %s, %s, %s, %s,
+                (SELECT facultad_id FROM programas WHERE id = %s)
+            )
             RETURNING id, estado, grupo, semestre
         """, (
             datos.usuario_id, datos.programa_id, datos.asignatura_id,
-            datos.grupo, datos.semestre, datos.estado, datos.fecha_inicio
+            datos.grupo, datos.semestre, datos.estado, datos.fecha_inicio,
+            datos.programa_id
         ))
         conn.commit()
         nueva = cursor.fetchone()

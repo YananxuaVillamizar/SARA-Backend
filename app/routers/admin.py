@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from app.database import get_connection
-from typing import Optional
+from typing import Optional, Any
 
 router = APIRouter()
 
@@ -162,7 +162,7 @@ def listar_asignaturas():
                    f.id AS facultad_id, f.nombre AS facultad
             FROM asignaturas a
             JOIN programas p ON p.id = a.programa_id
-            JOIN facultades f ON f.id = p.facultad_id
+            JOIN facultades f ON f.id = a.facultad_id
             ORDER BY p.nombre, a.nombre
         """)
         return cursor.fetchall()
@@ -177,10 +177,10 @@ def crear_asignatura(asignatura: AsignaturaCrear):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO asignaturas (nombre, codigo, creditos, programa_id)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO asignaturas (nombre, codigo, creditos, programa_id, facultad_id)
+            VALUES (%s, %s, %s, %s, %s)
             RETURNING id, nombre, codigo, creditos
-        """, (asignatura.nombre, asignatura.codigo, asignatura.creditos, asignatura.programa_id))
+        """, (asignatura.nombre, asignatura.codigo, asignatura.creditos, asignatura.programa_id, asignatura.facultad_id))
         conn.commit()
         return {"mensaje": "Asignatura creada", "asignatura": cursor.fetchone()}
     except Exception as e:
@@ -216,7 +216,7 @@ def listar_horarios():
             JOIN asignaturas a ON a.id = h.asignatura_id
             JOIN usuarios u ON u.id = h.docente_id
             JOIN programas p ON p.id = a.programa_id
-            JOIN facultades f ON f.id = p.facultad_id
+            JOIN facultades f ON f.id = a.facultad_id
             ORDER BY h.dia_semana, h.hora_inicio
         """)        
         return cursor.fetchall()
@@ -278,10 +278,12 @@ def listar_matriculas():
         cursor.execute("""
             SELECT m.id, m.semestre, m.estado, m.fecha_inicio,
                    u.nombres, u.apellidos, u.num_doc,
-                   p.nombre AS programa
+                   p.nombre AS programa,
+                   f.nombre AS facultad
             FROM matriculas m
             JOIN usuarios u ON u.id = m.usuario_id
             JOIN programas p ON p.id = m.programa_id
+            LEFT JOIN facultades f ON f.id = m.facultad_id
             ORDER BY u.apellidos
         """)
         return cursor.fetchall()
@@ -298,16 +300,23 @@ def crear_matricula(matricula: MatriculaCrear):
         # Verificar que el estudiante esté activo
         cursor.execute("SELECT activo FROM usuarios WHERE id = %s", (matricula.usuario_id,))
         estudiante = cursor.fetchone()
-        estudiante_dict = dict(estudiante) if estudiante else {}
-        if not estudiante or not estudiante_dict.get("activo", True):
+        if estudiante:
+            estudiante_dict: Any = estudiante
+            if not estudiante_dict.get('activo', True):
+                raise HTTPException(status_code=400, detail="Este estudiante está inactivo, no es posible matricularlo")
+        else:
             raise HTTPException(status_code=400, detail="Este estudiante está inactivo, no es posible matricularlo")
 
         cursor.execute("""
-            INSERT INTO matriculas (usuario_id, programa_id, semestre, fecha_inicio)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO matriculas (usuario_id, programa_id, semestre, fecha_inicio, facultad_id)
+            VALUES (
+                %s, %s, %s, %s,
+                (SELECT facultad_id FROM programas WHERE id = %s)
+            )
             RETURNING id, semestre, estado, fecha_inicio
         """, (matricula.usuario_id, matricula.programa_id,
-              matricula.semestre, matricula.fecha_inicio))
+              matricula.semestre, matricula.fecha_inicio,
+              matricula.programa_id))
         conn.commit()
         return {"mensaje": "Matrícula creada", "matricula": cursor.fetchone()}
     except Exception as e:
@@ -406,9 +415,9 @@ def actualizar_asignatura(asignatura_id: str, datos: AsignaturaCrear):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            UPDATE asignaturas SET nombre = %s, codigo = %s, creditos = %s, programa_id = %s
+            UPDATE asignaturas SET nombre = %s, codigo = %s, creditos = %s, programa_id = %s, facultad_id = %s
             WHERE id = %s RETURNING id, nombre, codigo, creditos
-        """, (datos.nombre, datos.codigo, datos.creditos, datos.programa_id, asignatura_id))
+        """, (datos.nombre, datos.codigo, datos.creditos, datos.programa_id, datos.facultad_id, asignatura_id))
         conn.commit()
         result = cursor.fetchone()
         if not result:

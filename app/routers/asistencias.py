@@ -125,14 +125,20 @@ def listar_asistencias(docente_id: Optional[str] = None, usuario_id: Optional[st
                 h.hora_fin,
                 prog.nombre AS programa,
                 fac.nombre AS facultad,
-                s.aula AS aula_sesion
+                s.aula AS aula_sesion,
+                doc.num_doc AS docente_num_doc,
+                (SELECT a2.hora_entrada FROM asistencias a2 WHERE a2.usuario_id = h.docente_id AND a2.sesion_id = s.id LIMIT 1) AS docente_hora_entrada,
+                (SELECT a2.hora_salida FROM asistencias a2 WHERE a2.usuario_id = h.docente_id AND a2.sesion_id = s.id LIMIT 1) AS docente_hora_salida,
+                (SELECT a2.metodo_verificacion FROM asistencias a2 WHERE a2.usuario_id = h.docente_id AND a2.sesion_id = s.id LIMIT 1) AS docente_metodo_verificacion,
+                (SELECT a2.estado FROM asistencias a2 WHERE a2.usuario_id = h.docente_id AND a2.sesion_id = s.id LIMIT 1) AS docente_estado_asistencia,
+                s.estado AS estado_sesion
             FROM horarios h
             JOIN asignaturas asig ON asig.id = h.asignatura_id
             JOIN usuarios doc ON doc.id = h.docente_id
             JOIN matriculas m ON m.asignatura_id = asig.id AND m.grupo = h.grupo
             JOIN usuarios u ON u.id = m.usuario_id
             JOIN programas prog ON prog.id = asig.programa_id
-            JOIN facultades fac ON fac.id = prog.facultad_id
+            JOIN facultades fac ON fac.id = asig.facultad_id
             LEFT JOIN sesiones_clase s ON s.horario_id = h.id
             LEFT JOIN asistencias a ON a.usuario_id = u.id AND a.horario_id = s.horario_id AND date(a.hora_entrada) = s.fecha
             JOIN roles r ON r.id = u.rol_id
@@ -193,6 +199,7 @@ def listar_asistencias(docente_id: Optional[str] = None, usuario_id: Optional[st
                         new_row['fecha'] = expected_date
                         new_row['docente_asistio'] = False
                         new_row['estado'] = 'N/A'
+                        new_row['estado_sesion'] = None
                         new_row['metodo_verificacion'] = 'N/A'
                         new_row['hora_entrada'] = None
                         new_row['hora_salida'] = None
