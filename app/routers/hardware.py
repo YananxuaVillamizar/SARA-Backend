@@ -64,12 +64,22 @@ class VerificarTipoRegistro(BaseModel):
     num_doc: str
 
 
-class RegistroAsistenciaEstudiante(BaseModel):
+class ObtenerDocenteSesion(BaseModel):
+    sesion_id: str
+
+
+class ObtenerMetodoEntrada(BaseModel):
+    num_doc: str
+    sesion_id: str
+
+
+class RegistroAsistenciaEstudianteConMetodo(BaseModel):
     num_doc: str
     horario_id: str
-    fecha: str  # YYYY-MM-DD
-    hora: str   # HH:MM:SS
-    tipo: str   # "entrada" o "salida"
+    fecha: str
+    hora: str
+    tipo: str
+    metodo_verificacion: str
 
 
 def obtener_siguiente_id_disponible():
@@ -1085,13 +1095,96 @@ def verificar_tipo_registro(request: VerificarTipoRegistro):
         if conn:
             conn.close()
 
-@router.post("/asistencia/estudiante/registrar")
-def registrar_asistencia_estudiante(request: RegistroAsistenciaEstudiante):
+@router.post("/sesiones/docente")
+def obtener_docente_sesion(request: ObtenerDocenteSesion):
     """
-    Registra asistencia de estudiante (entrada o salida)
-    
-    ENTRADA: Busca sesión abierta y crea asistencia
-    SALIDA: Busca sesión abierta, verifica entrada previa, actualiza asistencia
+    Obtiene el nombre del docente que dirige una sesión
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT u.nombres, u.apellidos
+            FROM usuarios u
+            JOIN horarios h ON u.id = h.docente_id
+            JOIN sesiones_clase sc ON h.id = sc.horario_id
+            WHERE sc.id = %s
+            LIMIT 1
+        """, (request.sesion_id,))
+        
+        docente: Any = cursor.fetchone()
+        
+        if docente is None:
+            return {"existe": False}
+        
+        nombre_completo = f"{docente['nombres']} {docente['apellidos']}"
+        
+        return {
+            "existe": True,
+            "nombre_docente": nombre_completo
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] en obtener_docente_sesion: {str(e)}")
+        return {"existe": False}
+    finally:
+        if conn:
+            conn.close()
+
+@router.post("/asistencia/obtener-metodo-entrada")
+def obtener_metodo_entrada(request: ObtenerMetodoEntrada):
+    """
+    Obtiene el método de verificación usado en la entrada de un estudiante
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Obtener usuario_id
+        cursor.execute("""
+            SELECT id FROM usuarios WHERE num_doc = %s
+        """, (request.num_doc,))
+        
+        usuario: Any = cursor.fetchone()
+        if usuario is None:
+            return {"encontrado": False}
+        
+        usuario_id = usuario['id']
+        
+        # Obtener método de entrada
+        cursor.execute("""
+            SELECT metodo_verificacion
+            FROM asistencias
+            WHERE usuario_id = %s AND sesion_id = %s AND hora_entrada IS NOT NULL
+            LIMIT 1
+        """, (usuario_id, request.sesion_id))
+        
+        registro: Any = cursor.fetchone()
+        
+        if registro is None:
+            return {"encontrado": False}
+        
+        return {
+            "encontrado": True,
+            "metodo_entrada": registro['metodo_verificacion']
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] en obtener_metodo_entrada: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {"encontrado": False}
+    finally:
+        if conn:
+            conn.close()
+
+@router.post("/asistencia/estudiante/registrar-metodo")
+def registrar_asistencia_estudiante_con_metodo(request: RegistroAsistenciaEstudianteConMetodo):
+    """
+    Registra asistencia de estudiante con método especificado (Biométrico o Supervisado)
     """
     conn = None
     try:
@@ -1111,7 +1204,7 @@ def registrar_asistencia_estudiante(request: RegistroAsistenciaEstudiante):
         usuario_id = usuario['id']
         timestamp_evento = f"{request.fecha} {request.hora}"
         
-        # Buscar sesión abierta para este horario en esta fecha
+        # Buscar sesión abierta
         cursor.execute("""
             SELECT id, aula
             FROM sesiones_clase
@@ -1121,7 +1214,6 @@ def registrar_asistencia_estudiante(request: RegistroAsistenciaEstudiante):
         
         sesion: Any = cursor.fetchone()
         
-        # Validar que exista sesión y esté abierta
         if not sesion:
             raise HTTPException(
                 status_code=403,
@@ -1144,7 +1236,7 @@ def registrar_asistencia_estudiante(request: RegistroAsistenciaEstudiante):
                 detail="La sesión no está abierta"
             )
         
-        # Buscar registro de asistencia previo del estudiante en esta sesión
+        # Buscar registro previo
         cursor.execute("""
             SELECT id, hora_entrada, hora_salida, sesion_id
             FROM asistencias
@@ -1155,9 +1247,6 @@ def registrar_asistencia_estudiante(request: RegistroAsistenciaEstudiante):
         registro_previo: Any = cursor.fetchone()
         
         if request.tipo == "entrada":
-            # ★ ENTRADA
-            print(f"[DEBUG] ENTRADA ESTUDIANTE")
-            
             if registro_previo and registro_previo['hora_entrada'] is not None:
                 raise HTTPException(
                     status_code=400,
@@ -1174,9 +1263,9 @@ def registrar_asistencia_estudiante(request: RegistroAsistenciaEstudiante):
             cursor.execute("""
                 INSERT INTO asistencias
                 (horario_id, usuario_id, hora_entrada, metodo_verificacion, estado, aula, fecha, sesion_id)
-                VALUES (%s, %s, %s::timestamp, 'Biometría', 'inasistencia', %s, %s, %s)
+                VALUES (%s, %s, %s::timestamp, %s, 'inasistencia', %s, %s, %s)
                 RETURNING id
-            """, (request.horario_id, usuario_id, timestamp_evento, aula, request.fecha, sesion_id))
+            """, (request.horario_id, usuario_id, timestamp_evento, request.metodo_verificacion, aula, request.fecha, sesion_id))
             
             conn.commit()
             
@@ -1188,9 +1277,6 @@ def registrar_asistencia_estudiante(request: RegistroAsistenciaEstudiante):
             }
         
         elif request.tipo == "salida":
-            # ★ SALIDA
-            print(f"[DEBUG] SALIDA ESTUDIANTE")
-            
             if not registro_previo:
                 raise HTTPException(
                     status_code=400,
@@ -1225,30 +1311,27 @@ def registrar_asistencia_estudiante(request: RegistroAsistenciaEstudiante):
             docente_asistencia: Any = cursor.fetchone()
             hora_entrada_docente = docente_asistencia['hora_entrada'] if docente_asistencia else None
             
-            # Determinar si hay retraso (más de 20 minutos respecto a la entrada del docente)
+            # Determinar si hay retraso
             estado_asistencia = 'presente'
             
             if hora_entrada_docente and registro_previo['hora_entrada']:
                 from datetime import datetime
                 
-                # Calcular diferencia en minutos entre entrada del estudiante y entrada del docente
                 diferencia = (registro_previo['hora_entrada'] - hora_entrada_docente).total_seconds() / 60
-                
-                print(f"[DEBUG] Hora entrada docente: {hora_entrada_docente}, Hora entrada estudiante: {registro_previo['hora_entrada']}, Diferencia: {diferencia} minutos")
                 
                 if diferencia > 20:
                     estado_asistencia = 'tarde'
-                    print(f"[DEBUG] Estudiante marcado como TARDE")
             
             timestamp_salida = f"{request.fecha} {request.hora}"
             
-            # Actualizar asistencia con hora_salida
+            # Actualizar asistencia
             cursor.execute("""
                 UPDATE asistencias
                 SET hora_salida = %s::timestamp,
-                    estado = %s
+                    estado = %s,
+                    metodo_verificacion = %s
                 WHERE id = %s
-            """, (timestamp_salida, estado_asistencia, registro_previo['id']))
+            """, (timestamp_salida, estado_asistencia, request.metodo_verificacion, registro_previo['id']))
             
             conn.commit()
             
@@ -1258,7 +1341,7 @@ def registrar_asistencia_estudiante(request: RegistroAsistenciaEstudiante):
                 "mensaje": "Salida registrada.",
                 "sesion_id": registro_previo['sesion_id']
             }
-            
+        
         else:
             raise HTTPException(status_code=400, detail="Tipo de registro inválido")
     
@@ -1267,7 +1350,7 @@ def registrar_asistencia_estudiante(request: RegistroAsistenciaEstudiante):
     except Exception as e:
         if conn:
             conn.rollback()
-        print(f"[ERROR] en registrar_asistencia_estudiante: {str(e)}")
+        print(f"[ERROR] en registrar_asistencia_estudiante_con_metodo: {str(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
