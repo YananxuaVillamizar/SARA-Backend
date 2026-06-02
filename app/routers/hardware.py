@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from app.database import get_connection
 from typing import Optional, Any
-from datetime import datetime
+from datetime import datetime, timedelta
 
 router = APIRouter()
 
@@ -26,42 +26,12 @@ class ObtenerDatosUsuarioRequest(BaseModel):
     num_doc: str
 
 
-class AsignaturasPrograma(BaseModel):
-    num_doc: str
-    programa_id: str
-
-
-class ObtenerHorarios(BaseModel):
-    num_doc: str
-    asignatura_id: str
-
-
-class VerificacionSesion(BaseModel):
-    horario_id: str
-    fecha: str
-
-
 class RegistroAsistenciaDocente(BaseModel):
     num_doc: str
     horario_id: str
     fecha: str  # YYYY-MM-DD
     hora: str   # HH:MM:SS
     aula: str   # Solo para entrada
-
-
-class ObtenerSesionesDisponibles(BaseModel):
-    num_doc: str
-    fecha: str
-
-
-class ObtenerHorariosEstudiante(BaseModel):
-    num_doc: str
-    asignatura_id: str
-
-
-class VerificarTipoRegistro(BaseModel):
-    sesion_id: str
-    num_doc: str
 
 
 class ObtenerDocenteSesion(BaseModel):
@@ -81,6 +51,55 @@ class RegistroAsistenciaEstudianteConMetodo(BaseModel):
     tipo: str
     metodo_verificacion: str
 
+
+class VerificarSesionesDocente(BaseModel):
+    num_doc: str
+    fecha: str  # YYYY-MM-DD
+
+
+class ObtenerAsignaturasDocentePorDia(BaseModel):
+    num_doc: str
+    dia_semana: str
+
+
+class ObtenerHorariosAsignatura(BaseModel):
+    num_doc: str
+    asignatura_id: str
+
+
+class ObtenerSesionesAbiertasPorFecha(BaseModel):
+    fecha: str  # YYYY-MM-DD
+
+
+class ObtenerDatosHorario(BaseModel):
+    horario_id: str
+
+
+class VerificarMatriculaEstudiante(BaseModel):
+    num_doc: str
+    asignatura_id: str
+    grupo: str
+
+
+class ObtenerAsistenciaEstudiantePorSesion(BaseModel):
+    num_doc: str
+    sesion_id: str
+
+
+class ObtenerAsignaturasDocente(BaseModel):
+    num_doc: str
+
+class ObtenerDatosAsignatura(BaseModel):
+    asignatura_id: str
+
+class ObtenerHorarioCompleto(BaseModel):
+    horario_id: str
+
+
+class VerificacionPinAdmin(BaseModel):
+    pin: str
+
+    
 
 def obtener_siguiente_id_disponible():
     """
@@ -122,6 +141,14 @@ def obtener_siguiente_id_disponible():
     finally:
         if conn:
             conn.close()
+
+def obtener_dia_semana(fecha_str: str) -> str:
+    """
+    Convierte una fecha YYYY-MM-DD a su día de la semana en español
+    """
+    fecha_obj = datetime.strptime(fecha_str, "%Y-%m-%d")
+    dias = ['lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo']
+    return dias[fecha_obj.weekday()]
 
 # ══════════════════════════════════════════════
 # ENDPOINT 1: BUSCAR USUARIO
@@ -364,352 +391,10 @@ def obtener_datos_usuario(request: ObtenerDatosUsuarioRequest):
     finally:
         if conn:
             conn.close()
-
-@router.post("/usuario/asignaturas")
-def obtener_asignaturas_usuario(request: ObtenerDatosUsuarioRequest):
-    """
-    Obtiene programas y asignaturas en UNA SOLA CONSULTA
-    """
-    conn = None
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # Obtener usuario y rol
-        cursor.execute("""
-            SELECT u.id, r.nombre as rol
-            FROM usuarios u
-            JOIN roles r ON r.id = u.rol_id
-            WHERE u.num_doc = %s AND u.activo = true
-        """, (request.num_doc,))
-        
-        usuario: Any = cursor.fetchone()
-        
-        if usuario is None:
-            return {
-                "existe": False,
-                "mensaje": "Usuario no encontrado"
-            }
-        
-        usuario_id = usuario['id']
-        rol = usuario['rol']
-        
-        if rol == 'Estudiante':
-            # Una sola consulta que retorna programas Y asignaturas
-            cursor.execute("""
-                SELECT 
-                    p.id as programa_id,
-                    p.nombre as programa_nombre,
-                    p.codigo as programa_codigo,
-                    a.id as asignatura_id,
-                    a.nombre,
-                    a.codigo,
-                    h.id as horario_id,
-                    m.grupo,
-                    h.aula
-                FROM matriculas m
-                JOIN asignaturas a ON a.id = m.asignatura_id
-                JOIN programas p ON p.id = m.programa_id
-                JOIN horarios h ON h.asignatura_id = a.id AND h.grupo = m.grupo
-                WHERE m.usuario_id = %s AND m.estado = 'activa'
-                    AND p.id IS NOT NULL
-                    AND a.id IS NOT NULL
-                ORDER BY p.nombre, a.nombre, h.id
-            """, (usuario_id,))
-        
-        elif rol == 'Docente':
-            # Una sola consulta que retorna programas Y asignaturas
-            cursor.execute("""
-                SELECT 
-                    p.id as programa_id,
-                    p.nombre as programa_nombre,
-                    p.codigo as programa_codigo,
-                    a.id as asignatura_id,
-                    a.nombre,
-                    a.codigo,
-                    h.id as horario_id,
-                    h.grupo,
-                    h.aula
-                FROM horarios h
-                JOIN asignaturas a ON a.id = h.asignatura_id
-                JOIN programas p ON p.id = a.programa_id
-                WHERE h.docente_id = %s
-                    AND p.id IS NOT NULL
-                    AND a.id IS NOT NULL
-                ORDER BY p.nombre, a.nombre, h.id
-            """, (usuario_id,))
-        
-        else:
-            return {
-                "existe": False,
-                "mensaje": "Rol no reconocido"
-            }
-        
-        # Procesar resultados de UNA SOLA CONSULTA
-        programas_dict = {}
-        asignaturas_dict = {}
-        
-        while True:
-            row: Any = cursor.fetchone()
-            if row is None:
-                break
-            
-            prog_id = row['programa_id']
-            asig_id = row['asignatura_id']
-            
-            # Agregar programa si no existe
-            if prog_id not in programas_dict:
-                programas_dict[prog_id] = {
-                    "programa_id": prog_id,
-                    "nombre": row['programa_nombre'],
-                    "codigo": row['programa_codigo']
-                }
-            
-            # Agregar asignatura si no existe
-            asig_key = f"{asig_id}_{row['grupo']}"
-            if asig_key not in asignaturas_dict:
-                asignaturas_dict[asig_key] = {
-                    "horario_id": row['horario_id'],
-                    "asignatura_id": asig_id,
-                    "nombre": row['nombre'],
-                    "codigo": row['codigo'],
-                    "grupo": row['grupo'],
-                    "aula": row['aula']
-                }
-        
-        programas = list(programas_dict.values())
-        asignaturas = list(asignaturas_dict.values())
-        
-        # Si hay múltiples programas
-        if len(programas) > 1:
-            return {
-                "existe": True,
-                "rol": rol,
-                "requiere_selector_programa": True,
-                "programas": programas
-            }
-        
-        # Si hay un solo programa o ninguno
-        return {
-            "existe": True,
-            "rol": rol,
-            "requiere_selector_programa": False,
-            "asignaturas": asignaturas
-        }
-        
-    except Exception as e:
-        print(f"[ERROR] en obtener_asignaturas_usuario: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if conn:
-            conn.close()
-
-@router.post("/usuario/asignaturas-programa")
-def obtener_asignaturas_por_programa(request: AsignaturasPrograma):
-    """
-    Obtiene asignaturas de un programa específico (optimizado)
-    """
-    conn = None
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # Obtener usuario y rol
-        cursor.execute("""
-            SELECT u.id, r.nombre as rol
-            FROM usuarios u
-            JOIN roles r ON r.id = u.rol_id
-            WHERE u.num_doc = %s AND u.activo = true
-        """, (request.num_doc,))
-        
-        usuario: Any = cursor.fetchone()
-        
-        if usuario is None:
-            raise HTTPException(status_code=404, detail="Usuario no encontrado")
-        
-        usuario_id = usuario['id']
-        rol = usuario['rol']
-        
-        if rol == 'Estudiante':
-            cursor.execute("""
-                SELECT DISTINCT ON (a.id)
-                    h.id as horario_id,
-                    a.id as asignatura_id,
-                    a.nombre,
-                    a.codigo,
-                    m.grupo,
-                    h.aula
-                FROM matriculas m
-                JOIN asignaturas a ON a.id = m.asignatura_id
-                JOIN horarios h ON h.asignatura_id = a.id AND h.grupo = m.grupo
-                WHERE m.usuario_id = %s AND m.programa_id = %s AND m.estado = 'activa'
-                ORDER BY a.id, a.nombre
-            """, (usuario_id, request.programa_id))
-        
-        elif rol == 'Docente':
-            cursor.execute("""
-                SELECT DISTINCT ON (a.id)
-                    a.id as asignatura_id,
-                    a.nombre,
-                    a.codigo,
-                    h.grupo,
-                    h.id as horario_id,
-                    h.aula
-                FROM horarios h
-                JOIN asignaturas a ON a.id = h.asignatura_id
-                WHERE h.docente_id = %s AND a.programa_id = %s
-                ORDER BY a.id, a.nombre
-            """, (usuario_id, request.programa_id))
-        
-        else:
-            raise HTTPException(status_code=403, detail="Rol no reconocido")
-        
-        asignaturas = []
-        while True:
-            row: Any = cursor.fetchone()
-            if row is None:
-                break
-            
-            asignaturas.append({
-                "horario_id": row['horario_id'],
-                "asignatura_id": row['asignatura_id'],
-                "nombre": row['nombre'],
-                "codigo": row['codigo'],
-                "grupo": row['grupo'],
-                "aula": row['aula']
-            })
-        
-        return {
-            "existe": True,
-            "rol": rol,
-            "asignaturas": asignaturas
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"[ERROR] en obtener_asignaturas_por_programa: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if conn:
-            conn.close()
-              
+           
 # ══════════════════════════════════════════════
 # ENDPOINT 4: REGISTRAR ASISTENCIA
 # ══════════════════════════════════════════════
-@router.post("/horarios/obtener")
-def obtener_horarios_asignatura(request: ObtenerHorarios):
-    """
-    Obtiene los horarios disponibles para una asignatura de un docente
-    """
-    conn = None
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        print(f"[DEBUG] Buscando horarios para docente: {request.num_doc}, asignatura: {request.asignatura_id}")
-        
-        cursor.execute("""
-            SELECT 
-                h.id as horario_id,
-                h.dia_semana,
-                h.hora_inicio,
-                h.hora_fin,
-                h.aula,
-                CASE h.dia_semana
-                    WHEN 'lunes' THEN 1
-                    WHEN 'martes' THEN 2
-                    WHEN 'miercoles' THEN 3
-                    WHEN 'jueves' THEN 4
-                    WHEN 'viernes' THEN 5
-                    WHEN 'sabado' THEN 6
-                    ELSE 7
-                END as dia_orden
-            FROM horarios h
-            JOIN usuarios u ON h.docente_id = u.id
-            WHERE u.num_doc = %s AND h.asignatura_id = %s
-            ORDER BY dia_orden, h.hora_inicio
-        """, (request.num_doc, request.asignatura_id))
-        
-        horarios = []
-        while True:
-            row: Any = cursor.fetchone()
-            if row is None:
-                break
-            
-            print(f"[DEBUG] Horario encontrado: {row['dia_semana']} {row['hora_inicio']}")
-            
-            horarios.append({
-                "horario_id": str(row['horario_id']),
-                "dia_semana": row['dia_semana'],
-                "hora_inicio": str(row['hora_inicio']),
-                "hora_fin": str(row['hora_fin']),
-                "aula": row['aula']
-            })
-        
-        print(f"[DEBUG] Total horarios encontrados: {len(horarios)}")
-        
-        return {
-            "existe": True,
-            "horarios": horarios
-        }
-        
-    except Exception as e:
-        print(f"[ERROR] en obtener_horarios_asignatura: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return {"existe": False, "horarios": []}
-    finally:
-        if conn:
-            conn.close()
-
-@router.post("/sesiones/verificar")
-def verificar_sesion_abierta(request: VerificacionSesion):
-    """
-    Verifica si hay una sesión abierta para un horario en una fecha específica
-    Simple: busca sesión con horario_id, fecha y estado='abierta'
-    """
-    conn = None
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        print(f"[DEBUG] Verificando sesión: horario_id={request.horario_id}, fecha={request.fecha}")
-        
-        cursor.execute("""
-            SELECT id, aula
-            FROM sesiones_clase
-            WHERE horario_id = %s AND fecha = %s AND estado = 'abierta'
-            LIMIT 1
-        """, (request.horario_id, request.fecha))
-        
-        sesion: Any = cursor.fetchone()
-        
-        if sesion is None:
-            print(f"[DEBUG] No hay sesión abierta")
-            return {"hay_sesion_abierta": False}
-        
-        print(f"[DEBUG] Sesión abierta encontrada: {sesion['id']}")
-        
-        return {
-            "hay_sesion_abierta": True,
-            "sesion_id": str(sesion['id']),
-            "aula": sesion['aula']
-        }
-        
-    except Exception as e:
-        print(f"[ERROR] en verificar_sesion_abierta: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return {"hay_sesion_abierta": False}
-    finally:
-        if conn:
-            conn.close()
-
 @router.post("/asistencia/docente/registrar")
 def registrar_asistencia_docente(request: RegistroAsistenciaDocente):
     """
@@ -894,203 +579,6 @@ def registrar_asistencia_docente(request: RegistroAsistenciaDocente):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if conn:
-            conn.close()
-
-@router.post("/sesiones/disponibles")
-def obtener_sesiones_disponibles(request: ObtenerSesionesDisponibles):
-    """
-    Obtiene las sesiones abiertas disponibles para un estudiante en una fecha
-    Basándose en sus matrículas activas
-    """
-    conn = None
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        print(f"[DEBUG] Buscando sesiones para estudiante: {request.num_doc}, fecha: {request.fecha}")
-        
-        # Obtener todas las asignaturas matriculadas del estudiante
-        cursor.execute("""
-            SELECT DISTINCT
-                h.id as horario_id,
-                a.nombre as asignatura_nombre,
-                a.codigo as asignatura_codigo,
-                h.grupo,
-                h.dia_semana,
-                h.hora_inicio,
-                h.hora_fin,
-                h.aula,
-                sc.id as sesion_id
-            FROM matriculas m
-            JOIN asignaturas a ON a.id = m.asignatura_id
-            JOIN horarios h ON h.asignatura_id = a.id AND h.grupo = m.grupo
-            JOIN sesiones_clase sc ON sc.horario_id = h.id AND sc.fecha = %s AND sc.estado = 'abierta'
-            JOIN usuarios u ON u.id = m.usuario_id
-            WHERE u.num_doc = %s AND m.estado = 'activa'
-            ORDER BY h.hora_inicio
-        """, (request.fecha, request.num_doc))
-        
-        sesiones = []
-        while True:
-            row: Any = cursor.fetchone()
-            if row is None:
-                break
-            
-            sesiones.append({
-                "horario_id": str(row['horario_id']),
-                "sesion_id": str(row['sesion_id']),
-                "asignatura_nombre": row['asignatura_nombre'],
-                "asignatura_codigo": row['asignatura_codigo'],
-                "grupo": row['grupo'],
-                "dia_semana": row['dia_semana'],
-                "hora_inicio": str(row['hora_inicio']),
-                "hora_fin": str(row['hora_fin']),
-                "aula": row['aula']
-            })
-        
-        print(f"[DEBUG] Sesiones abiertas encontradas: {len(sesiones)}")
-        
-        return {
-            "hay_sesiones": len(sesiones) > 0,
-            "sesiones": sesiones
-        }
-        
-    except Exception as e:
-        print(f"[ERROR] en obtener_sesiones_disponibles: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return {"hay_sesiones": False, "sesiones": []}
-    finally:
-        if conn:
-            conn.close()
-
-@router.post("/horarios/estudiante-asignatura")
-def obtener_horarios_estudiante_asignatura(request: ObtenerHorariosEstudiante):
-    """
-    Obtiene los horarios disponibles para un estudiante en una asignatura específica
-    Basándose en el grupo del estudiante
-    """
-    conn = None
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # Obtener el grupo del estudiante en esta asignatura
-        cursor.execute("""
-            SELECT m.grupo
-            FROM matriculas m
-            JOIN usuarios u ON m.usuario_id = u.id
-            WHERE u.num_doc = %s AND m.asignatura_id = %s AND m.estado = 'activa'
-            LIMIT 1
-        """, (request.num_doc, request.asignatura_id))
-        
-        matricula: Any = cursor.fetchone()
-        
-        if matricula is None:
-            return {"existe": False, "horarios": []}
-        
-        grupo = matricula['grupo']
-        
-        # Obtener horarios con ese grupo y asignatura
-        cursor.execute("""
-            SELECT 
-                h.id as horario_id,
-                h.dia_semana,
-                h.hora_inicio,
-                h.hora_fin,
-                h.aula,
-                CASE h.dia_semana
-                    WHEN 'lunes' THEN 1
-                    WHEN 'martes' THEN 2
-                    WHEN 'miercoles' THEN 3
-                    WHEN 'jueves' THEN 4
-                    WHEN 'viernes' THEN 5
-                    WHEN 'sabado' THEN 6
-                    ELSE 7
-                END as dia_orden
-            FROM horarios h
-            WHERE h.asignatura_id = %s AND h.grupo = %s
-            ORDER BY dia_orden, h.hora_inicio
-        """, (request.asignatura_id, grupo))
-        
-        horarios = []
-        while True:
-            row: Any = cursor.fetchone()
-            if row is None:
-                break
-            
-            horarios.append({
-                "horario_id": str(row['horario_id']),
-                "dia_semana": row['dia_semana'],
-                "hora_inicio": str(row['hora_inicio']),
-                "hora_fin": str(row['hora_fin']),
-                "aula": row['aula']
-            })
-        
-        return {
-            "existe": True,
-            "horarios": horarios
-        }
-        
-    except Exception as e:
-        print(f"[ERROR] en obtener_horarios_estudiante_asignatura: {str(e)}")
-        return {"existe": False, "horarios": []}
-    finally:
-        if conn:
-            conn.close()
-
-@router.post("/asistencia/tipo-registro")
-def verificar_tipo_registro(request: VerificarTipoRegistro):
-    """
-    Verifica qué tipo de registro debe hacer un estudiante (entrada o salida)
-    Basándose en si ya tiene registro de entrada en esa sesión
-    """
-    conn = None
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # Obtener usuario
-        cursor.execute("""
-            SELECT id FROM usuarios WHERE num_doc = %s
-        """, (request.num_doc,))
-        
-        usuario: Any = cursor.fetchone()
-        if usuario is None:
-            return {"error": "Usuario no encontrado"}
-        
-        usuario_id = usuario['id']
-        
-        # Buscar registro previo en esta sesión
-        cursor.execute("""
-            SELECT hora_entrada, hora_salida
-            FROM asistencias
-            WHERE usuario_id = %s AND sesion_id = %s
-            LIMIT 1
-        """, (usuario_id, request.sesion_id))
-        
-        registro: Any = cursor.fetchone()
-        
-        if registro is None:
-            # No hay registro, debe hacer entrada
-            return {"puede_entrada": True, "puede_salida": False}
-        
-        if registro['hora_entrada'] is None:
-            # Tiene registro pero sin entrada, debe hacer entrada
-            return {"puede_entrada": True, "puede_salida": False}
-        
-        if registro['hora_salida'] is not None:
-            # Ya tiene entrada y salida, no puede hacer nada más
-            return {"puede_entrada": False, "puede_salida": False, "completado": True}
-        
-        # Tiene entrada pero no salida, puede hacer salida
-        return {"puede_entrada": False, "puede_salida": True}
-        
-    except Exception as e:
-        print(f"[ERROR] en verificar_tipo_registro: {str(e)}")
-        return {"error": str(e)}
     finally:
         if conn:
             conn.close()
@@ -1358,4 +846,536 @@ def registrar_asistencia_estudiante_con_metodo(request: RegistroAsistenciaEstudi
         if conn:
             conn.close()
 
+@router.post("/docente/sesiones-abierta-por-fecha")
+def verificar_sesiones_docente(request: VerificarSesionesDocente):
+    """
+    Verifica si un docente tiene sesiones abiertas en una fecha específica
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Obtener docente_id
+        cursor.execute("""
+            SELECT id FROM usuarios WHERE num_doc = %s
+        """, (request.num_doc,))
+        
+        usuario: Any = cursor.fetchone()
+        if usuario is None:
+            return {"existe": False, "hay_sesiones": False}
+        
+        docente_id = usuario['id']
+        
+        # Buscar sesiones abiertas creadas por este docente en esta fecha
+        cursor.execute("""
+            SELECT id, horario_id, aula, created_at
+            FROM sesiones_clase
+            WHERE creado_por = %s AND fecha = %s AND estado = 'abierta'
+            LIMIT 1
+        """, (docente_id, request.fecha))
+        
+        sesion: Any = cursor.fetchone()
+        
+        if sesion is None:
+            return {"existe": True, "hay_sesiones": False}
+        
+        return {
+            "existe": True,
+            "hay_sesiones": True,
+            "sesion_id": str(sesion['id']),
+            "horario_id": str(sesion['horario_id']),
+            "aula": sesion['aula']
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] en verificar_sesiones_docente: {str(e)}")
+        return {"existe": False, "hay_sesiones": False}
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.post("/docente/asignaturas-por-dia")
+def obtener_asignaturas_docente_por_dia(request: ObtenerAsignaturasDocentePorDia):
+    """
+    Obtiene las asignaturas que un docente imparte en un día específico
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Obtener docente_id
+        cursor.execute("""
+            SELECT id FROM usuarios WHERE num_doc = %s
+        """, (request.num_doc,))
+        
+        usuario: Any = cursor.fetchone()
+        if usuario is None:
+            return {"existe": False, "asignaturas": []}
+        
+        docente_id = usuario['id']
+        
+        # Obtener asignaturas con sus horarios para ese día
+        cursor.execute("""
+            SELECT DISTINCT
+                a.id as asignatura_id,
+                a.nombre,
+                a.codigo,
+                h.grupo,
+                h.hora_inicio,
+                h.hora_fin,
+                h.id as horario_id,
+                h.aula
+            FROM horarios h
+            JOIN asignaturas a ON a.id = h.asignatura_id
+            WHERE h.docente_id = %s AND h.dia_semana = %s
+            ORDER BY h.hora_inicio
+        """, (docente_id, request.dia_semana))
+        
+        asignaturas = []
+        while True:
+            row: Any = cursor.fetchone()
+            if row is None:
+                break
+            
+            asignaturas.append({
+                "asignatura_id": str(row['asignatura_id']),
+                "nombre": row['nombre'],
+                "codigo": row['codigo'],
+                "grupo": row['grupo'],
+                "hora_inicio": str(row['hora_inicio']),
+                "hora_fin": str(row['hora_fin']),
+                "horario_id": str(row['horario_id']),
+                "aula": row['aula']
+            })
+        
+        return {
+            "existe": True,
+            "asignaturas": asignaturas
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] en obtener_asignaturas_docente_por_dia: {str(e)}")
+        return {"existe": False, "asignaturas": []}
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.post("/docente/horarios-asignatura")
+def obtener_horarios_asignatura_docente(request: ObtenerHorariosAsignatura):
+    """
+    Obtiene todos los horarios de una asignatura para un docente (para sesiones extraordinarias)
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Obtener docente_id
+        cursor.execute("""
+            SELECT id FROM usuarios WHERE num_doc = %s
+        """, (request.num_doc,))
+        
+        usuario: Any = cursor.fetchone()
+        if usuario is None:
+            return {"existe": False, "horarios": []}
+        
+        docente_id = usuario['id']
+        
+        # Obtener horarios para esta asignatura impartida por este docente
+        cursor.execute("""
+            SELECT DISTINCT
+                h.id as horario_id,
+                h.dia_semana,
+                h.hora_inicio,
+                h.hora_fin,
+                h.grupo,
+                h.aula,
+                CASE h.dia_semana
+                    WHEN 'lunes' THEN 1
+                    WHEN 'martes' THEN 2
+                    WHEN 'miercoles' THEN 3
+                    WHEN 'jueves' THEN 4
+                    WHEN 'viernes' THEN 5
+                    WHEN 'sabado' THEN 6
+                    ELSE 7
+                END as dia_orden
+            FROM horarios h
+            WHERE h.docente_id = %s AND h.asignatura_id = %s
+            ORDER BY dia_orden, h.hora_inicio
+        """, (docente_id, request.asignatura_id))
+        
+        horarios = []
+        while True:
+            row: Any = cursor.fetchone()
+            if row is None:
+                break
+            
+            horarios.append({
+                "horario_id": str(row['horario_id']),
+                "dia_semana": row['dia_semana'],
+                "hora_inicio": str(row['hora_inicio']),
+                "hora_fin": str(row['hora_fin']),
+                "grupo": row['grupo'],
+                "aula": row['aula']
+            })
+        
+        return {
+            "existe": True,
+            "horarios": horarios
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] en obtener_horarios_asignatura_docente: {str(e)}")
+        return {"existe": False, "horarios": []}
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.post("/estudiante/sesiones-abiertas-por-fecha")
+def obtener_sesiones_abiertas_por_fecha(request: ObtenerSesionesAbiertasPorFecha):
+    """
+    Obtiene todas las sesiones abiertas en una fecha específica
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, horario_id, aula, created_at
+            FROM sesiones_clase
+            WHERE fecha = %s AND estado = 'abierta'
+            ORDER BY created_at
+        """, (request.fecha,))
+        
+        sesiones = []
+        while True:
+            row: Any = cursor.fetchone()
+            if row is None:
+                break
+            
+            sesiones.append({
+                "sesion_id": str(row['id']),
+                "horario_id": str(row['horario_id']),
+                "aula": row['aula'],
+                "created_at": str(row['created_at'])
+            })
+        
+        return {
+            "hay_sesiones": len(sesiones) > 0,
+            "sesiones": sesiones
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] en obtener_sesiones_abiertas_por_fecha: {str(e)}")
+        return {"hay_sesiones": False, "sesiones": []}
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.post("/horarios/datos")
+def obtener_datos_horario(request: ObtenerDatosHorario):
+    """
+    Obtiene los datos de un horario específico (asignatura_id, grupo)
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT asignatura_id, grupo
+            FROM horarios
+            WHERE id = %s
+            LIMIT 1
+        """, (request.horario_id,))
+        
+        horario: Any = cursor.fetchone()
+        
+        if horario is None:
+            return {"existe": False}
+        
+        return {
+            "existe": True,
+            "asignatura_id": str(horario['asignatura_id']),
+            "grupo": horario['grupo']
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] en obtener_datos_horario: {str(e)}")
+        return {"existe": False}
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.post("/estudiante/verificar-matricula")
+def verificar_matricula_estudiante(request: VerificarMatriculaEstudiante):
+    """
+    Verifica si un estudiante está matriculado en una asignatura con un grupo específico
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Obtener estudiante_id
+        cursor.execute("""
+            SELECT id FROM usuarios WHERE num_doc = %s
+        """, (request.num_doc,))
+        
+        usuario: Any = cursor.fetchone()
+        if usuario is None:
+            return {"matriculado": False}
+        
+        usuario_id = usuario['id']
+        
+        # Verificar matrícula
+        cursor.execute("""
+            SELECT id FROM matriculas
+            WHERE usuario_id = %s AND asignatura_id = %s AND grupo = %s AND estado = 'activa'
+            LIMIT 1
+        """, (usuario_id, request.asignatura_id, request.grupo))
+        
+        matricula: Any = cursor.fetchone()
+        
+        return {
+            "matriculado": matricula is not None
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] en verificar_matricula_estudiante: {str(e)}")
+        return {"matriculado": False}
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.post("/estudiante/asistencia-por-sesion")
+def obtener_asistencia_estudiante_por_sesion(request: ObtenerAsistenciaEstudiantePorSesion):
+    """
+    Obtiene el registro de asistencia de un estudiante para una sesión específica
+    Si existe y está en estado "inasistencia", retorna los datos para permitir salida
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Obtener estudiante_id
+        cursor.execute("""
+            SELECT id FROM usuarios WHERE num_doc = %s
+        """, (request.num_doc,))
+        
+        usuario: Any = cursor.fetchone()
+        if usuario is None:
+            return {"existe": False}
+        
+        usuario_id = usuario['id']
+        
+        # Buscar registro de asistencia en estado "inasistencia"
+        cursor.execute("""
+            SELECT id, hora_entrada, metodo_verificacion
+            FROM asistencias
+            WHERE usuario_id = %s AND sesion_id = %s AND estado = 'inasistencia'
+            LIMIT 1
+        """, (usuario_id, request.sesion_id))
+        
+        asistencia: Any = cursor.fetchone()
+        
+        if asistencia is None:
+            return {"existe": False}
+        
+        return {
+            "existe": True,
+            "asistencia_id": str(asistencia['id']),
+            "hora_entrada": str(asistencia['hora_entrada']),
+            "metodo_verificacion": asistencia['metodo_verificacion']
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] en obtener_asistencia_estudiante_por_sesion: {str(e)}")
+        return {"existe": False}
+    finally:
+        if conn:
+            conn.close()
+
+@router.post("/docente/todas-asignaturas")
+def obtener_todas_asignaturas_docente(request: ObtenerAsignaturasDocente):
+    """
+    Obtiene todas las asignaturas que imparte un docente
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Obtener docente_id
+        cursor.execute("""
+            SELECT id FROM usuarios WHERE num_doc = %s
+        """, (request.num_doc,))
+        
+        usuario: Any = cursor.fetchone()
+        if usuario is None:
+            return {"existe": False, "asignaturas": []}
+        
+        docente_id = usuario['id']
+        
+        # Obtener todas las asignaturas únicas que imparte
+        cursor.execute("""
+            SELECT DISTINCT
+                a.id as asignatura_id,
+                a.nombre,
+                a.codigo,
+                h.grupo
+            FROM horarios h
+            JOIN asignaturas a ON a.id = h.asignatura_id
+            WHERE h.docente_id = %s
+            ORDER BY a.nombre, h.grupo
+        """, (docente_id,))
+        
+        asignaturas = []
+        while True:
+            row: Any = cursor.fetchone()
+            if row is None:
+                break
+            
+            asignaturas.append({
+                "asignatura_id": str(row['asignatura_id']),
+                "nombre": row['nombre'],
+                "codigo": row['codigo'],
+                "grupo": row['grupo']
+            })
+        
+        return {
+            "existe": True,
+            "asignaturas": asignaturas
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] en obtener_todas_asignaturas_docente: {str(e)}")
+        return {"existe": False, "asignaturas": []}
+    finally:
+        if conn:
+            conn.close()
+
+@router.post("/asignaturas/datos")
+def obtener_datos_asignatura(request: ObtenerDatosAsignatura):
+    """
+    Obtiene los datos de una asignatura (nombre, código)
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT nombre, codigo
+            FROM asignaturas
+            WHERE id = %s
+            LIMIT 1
+        """, (request.asignatura_id,))
+        
+        asignatura: Any = cursor.fetchone()
+        
+        if asignatura is None:
+            return {"existe": False}
+        
+        return {
+            "existe": True,
+            "nombre": asignatura['nombre'],
+            "codigo": asignatura['codigo']
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] en obtener_datos_asignatura: {str(e)}")
+        return {"existe": False}
+    finally:
+        if conn:
+            conn.close()
+
+@router.post("/horarios/completo")
+def obtener_horario_completo(request: ObtenerHorarioCompleto):
+    """
+    Obtiene todos los datos de un horario (asignatura_id, grupo, hora_inicio, hora_fin, dia_semana)
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT asignatura_id, grupo, hora_inicio, hora_fin, dia_semana
+            FROM horarios
+            WHERE id = %s
+            LIMIT 1
+        """, (request.horario_id,))
+        
+        horario: Any = cursor.fetchone()
+        
+        if horario is None:
+            return {"existe": False}
+        
+        return {
+            "existe": True,
+            "asignatura_id": str(horario['asignatura_id']),
+            "grupo": horario['grupo'],
+            "hora_inicio": str(horario['hora_inicio']),
+            "hora_fin": str(horario['hora_fin']),
+            "dia_semana": horario['dia_semana']
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] en obtener_horario_completo: {str(e)}")
+        return {"existe": False}
+    finally:
+        if conn:
+            conn.close()
+
+@router.post("/admin/verificar-pin")
+def verificar_pin_admin(request: VerificacionPinAdmin):
+    """
+    Verifica si el PIN corresponde a un administrativo
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        print(f"[DEBUG] Verificando PIN admin")
+        
+        cursor.execute("""
+            SELECT id, usuario_id FROM pin_acceso
+            WHERE pin = %s AND tipo_rol = 'Administrativo' AND activo = true
+            LIMIT 1
+        """, (request.pin,))
+        
+        resultado: Any = cursor.fetchone()
+        
+        if resultado is None:
+            print("[DEBUG] PIN admin inválido")
+            return {
+                "valido": False,
+                "mensaje": "PIN incorrecto"
+            }
+        
+        print("[DEBUG] PIN admin válido")
+        return {
+            "valido": True,
+            "usuario_id": str(resultado['usuario_id']),
+            "mensaje": "Autenticado como administrador"
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] en verificar_pin_admin: {str(e)}")
+        return {"valido": False, "mensaje": "Error en verificación"}
+    finally:
+        if conn:
+            conn.close()
 

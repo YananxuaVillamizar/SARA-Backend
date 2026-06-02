@@ -3,9 +3,20 @@ from pydantic import BaseModel, EmailStr
 from app.database import get_connection
 from passlib.context import CryptContext
 from typing import Optional
+import random
+import uuid
+from datetime import datetime
 
 router = APIRouter()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def generar_pin_unico(cursor) -> str:
+    for _ in range(100):
+        pin = f"{random.randint(0, 9999):04d}"
+        cursor.execute("SELECT 1 FROM pin_acceso WHERE pin = %s AND activo = true LIMIT 1", (pin,))
+        if not cursor.fetchone():
+            return pin
+    raise ValueError("No se pudo generar un PIN único de 4 dígitos.")
 
 # ── Modelos de datos ──────────────────────────────────────────
 class UsuarioCrear(BaseModel):
@@ -29,6 +40,7 @@ class UsuarioActualizar(BaseModel):
     password: Optional[str] = None
     activo: Optional[bool] = None
     autoriza_biometria: Optional[bool] = None
+    pin: Optional[str] = None
 
 # ── Endpoints ─────────────────────────────────────────────────
 @router.get("/")
@@ -74,14 +86,52 @@ def crear_usuario(usuario: UsuarioCrear):
             password_hash, usuario.autoriza_biometria
         ))
 
-        conn.commit()
         nuevo = cursor.fetchone()
-        return {"mensaje": "Usuario creado exitosamente", "usuario": nuevo}
+        nuevo_id = nuevo["id"]
+        pin = None
+
+        # Consultar el rol del usuario para ver si requiere PIN
+        cursor.execute("SELECT nombre FROM roles WHERE id = %s", (usuario.rol_id,))
+        rol_row = cursor.fetchone()
+        rol_name = rol_row["nombre"] if rol_row else None
+
+        if rol_name in ["Docente", "Administrativo"]:
+            pin = generar_pin_unico(cursor)
+            cursor.execute("""
+                INSERT INTO pin_acceso (id, usuario_id, pin, activo, created_at, updated_at, tipo_rol)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (
+                str(uuid.uuid4()),
+                str(nuevo_id),
+                pin,
+                True,
+                datetime.now(),
+                datetime.now(),
+                rol_name
+            ))
+
+        conn.commit()
+        return {"mensaje": "Usuario creado exitosamente", "usuario": nuevo, "pin": pin}
 
     except Exception as e:
         if conn:
             conn.rollback()
         raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        if conn:
+            conn.close()
+
+@router.get("/generar-pin-seguro")
+def generar_pin_seguro():
+    """Genera un PIN de 4 dígitos único y libre"""
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        pin = generar_pin_unico(cursor)
+        return {"pin": pin}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:
             conn.close()
@@ -94,11 +144,12 @@ def obtener_usuario(num_doc: str):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT u.id, u.nombres, u.apellidos, u.num_doc,
+            SELECT u.id, u.nombres, u.apellidos, u.tipo_doc, u.num_doc,
                    u.email, u.activo, u.autoriza_biometria,
-                   r.nombre as rol
+                   r.nombre as rol, p.pin as pin
             FROM usuarios u
             JOIN roles r ON r.id = u.rol_id
+            LEFT JOIN pin_acceso p ON p.usuario_id = u.id AND p.activo = true
             WHERE u.num_doc = %s
         """, (num_doc,))
         usuario = cursor.fetchone()
@@ -116,6 +167,59 @@ def actualizar_usuario(num_doc: str, datos: UsuarioActualizar):
     try:
         conn = get_connection()
         cursor = conn.cursor()
+
+        # Primero procesamos el PIN si se envió en los datos
+        if datos.pin is not None:
+            new_pin = datos.pin.strip()
+            if len(new_pin) > 0:
+                if len(new_pin) != 4 or not new_pin.isdigit():
+                    raise HTTPException(status_code=400, detail="El PIN debe ser de exactamente 4 dígitos numéricos.")
+                
+                # Verificar si el PIN ya está siendo utilizado por otro usuario activo
+                cursor.execute("""
+                    SELECT usuario_id FROM pin_acceso 
+                    WHERE pin = %s AND activo = true AND usuario_id != (SELECT id FROM usuarios WHERE num_doc = %s)
+                    LIMIT 1
+                """, (new_pin, num_doc))
+                colision = cursor.fetchone()
+                if colision:
+                    raise HTTPException(status_code=400, detail="El PIN ya está en uso por otro usuario.")
+                
+                # Obtener ID y rol del usuario
+                cursor.execute("""
+                    SELECT u.id, r.nombre as rol 
+                    FROM usuarios u 
+                    JOIN roles r ON r.id = u.rol_id 
+                    WHERE u.num_doc = %s
+                """, (num_doc,))
+                u_row = cursor.fetchone()
+                if u_row:
+                    u_id = u_row["id"]
+                    rol_name = u_row["rol"]
+                    
+                    if rol_name in ["Docente", "Administrativo"]:
+                        # Verificar si ya tiene un registro de PIN
+                        cursor.execute("SELECT id FROM pin_acceso WHERE usuario_id = %s LIMIT 1", (u_id,))
+                        pin_exists = cursor.fetchone()
+                        if pin_exists:
+                            cursor.execute("""
+                                UPDATE pin_acceso 
+                                SET pin = %s, activo = true, updated_at = %s, tipo_rol = %s
+                                WHERE usuario_id = %s
+                            """, (new_pin, datetime.now(), rol_name, u_id))
+                        else:
+                            cursor.execute("""
+                                INSERT INTO pin_acceso (id, usuario_id, pin, activo, created_at, updated_at, tipo_rol)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            """, (
+                                str(uuid.uuid4()),
+                                str(u_id),
+                                new_pin,
+                                True,
+                                datetime.now(),
+                                datetime.now(),
+                                rol_name
+                            ))
 
         campos: list[str] = []
         valores: list = []
@@ -162,18 +266,26 @@ def actualizar_usuario(num_doc: str, datos: UsuarioActualizar):
                     WHERE usuario_id = (SELECT id FROM usuarios WHERE num_doc = %s)
                 """, (num_doc,))
 
-        if not campos:
+        # Si no hay campos para la tabla usuarios, pero se actualizó el PIN, es válido
+        if not campos and datos.pin is None:
             raise HTTPException(status_code=400, detail="No hay datos para actualizar")
 
-        valores.append(num_doc)
-        cursor.execute(f"""
-            UPDATE usuarios SET {', '.join(campos)}
-            WHERE num_doc = %s
-            RETURNING id, nombres, apellidos, email, activo
-        """, valores)
+        if campos:
+            valores.append(num_doc)
+            cursor.execute(f"""
+                UPDATE usuarios SET {', '.join(campos)}
+                WHERE num_doc = %s
+                RETURNING id, nombres, apellidos, email, activo
+            """, valores)
+            actualizado = cursor.fetchone()
+        else:
+            # Si solo se actualizó el PIN, obtenemos la info del usuario para retornar
+            cursor.execute("""
+                SELECT id, nombres, apellidos, email, activo FROM usuarios WHERE num_doc = %s
+            """, (num_doc,))
+            actualizado = cursor.fetchone()
 
         conn.commit()
-        actualizado = cursor.fetchone()
         if not actualizado:
             raise HTTPException(status_code=404, detail="Usuario no encontrado")
         return {"mensaje": "Usuario actualizado", "usuario": actualizado}
