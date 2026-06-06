@@ -14,34 +14,25 @@ class BuscarUsuarioRequest(BaseModel):
     """El ESP32 envía el documento del usuario"""
     num_doc: str
 
-
 class NotificarRegistroRequest(BaseModel):
     """El ESP32 notifica que la huella fue registrada en el sensor"""
     num_doc: str
     sensor_id: int
 
-
 class ObtenerDatosUsuarioRequest(BaseModel):
     """Obtener datos completos del usuario"""
     num_doc: str
-
 
 class RegistroAsistenciaDocente(BaseModel):
     num_doc: str
     horario_id: str
     fecha: str  # YYYY-MM-DD
     hora: str   # HH:MM:SS
-    aula: str   # Solo para entrada
-
+    aula: str
+    tipo_sesion: str  # 'ordinaria' o 'extraordinaria'
 
 class ObtenerDocenteSesion(BaseModel):
     sesion_id: str
-
-
-class ObtenerMetodoEntrada(BaseModel):
-    num_doc: str
-    sesion_id: str
-
 
 class RegistroAsistenciaEstudianteConMetodo(BaseModel):
     num_doc: str
@@ -51,40 +42,20 @@ class RegistroAsistenciaEstudianteConMetodo(BaseModel):
     tipo: str
     metodo_verificacion: str
 
-
 class VerificarSesionesDocente(BaseModel):
     num_doc: str
     fecha: str  # YYYY-MM-DD
-
 
 class ObtenerAsignaturasDocentePorDia(BaseModel):
     num_doc: str
     dia_semana: str
 
-
 class ObtenerHorariosAsignatura(BaseModel):
     num_doc: str
     asignatura_id: str
 
-
-class ObtenerSesionesAbiertasPorFecha(BaseModel):
-    fecha: str  # YYYY-MM-DD
-
-
 class ObtenerDatosHorario(BaseModel):
     horario_id: str
-
-
-class VerificarMatriculaEstudiante(BaseModel):
-    num_doc: str
-    asignatura_id: str
-    grupo: str
-
-
-class ObtenerAsistenciaEstudiantePorSesion(BaseModel):
-    num_doc: str
-    sesion_id: str
-
 
 class ObtenerAsignaturasDocente(BaseModel):
     num_doc: str
@@ -92,14 +63,29 @@ class ObtenerAsignaturasDocente(BaseModel):
 class ObtenerDatosAsignatura(BaseModel):
     asignatura_id: str
 
-class ObtenerHorarioCompleto(BaseModel):
-    horario_id: str
-
-
 class VerificacionPinAdmin(BaseModel):
     pin: str
 
+class SesionesDisponiblesRequest(BaseModel):
+    num_doc: str
+    fecha: str
+
+class SesionParaSalidaRequest(BaseModel):
+    num_doc: str
+
+class NombreDocentePorSesionRequest(BaseModel):
+    sesion_id: str
     
+class MetodoEntradaRequest(BaseModel):
+    num_doc: str
+    sesion_id: str
+
+class VerificacionPinDocenteRequest(BaseModel):
+    num_doc: str
+    pin: str
+
+class ObtenerUsuarioDocentePorSesionRequest(BaseModel):
+    sesion_id: str
 
 def obtener_siguiente_id_disponible():
     """
@@ -395,190 +381,108 @@ def obtener_datos_usuario(request: ObtenerDatosUsuarioRequest):
 # ══════════════════════════════════════════════
 # ENDPOINT 4: REGISTRAR ASISTENCIA
 # ══════════════════════════════════════════════
-@router.post("/asistencia/docente/registrar")
+@router.post("/docente/asistencia/registrar")
 def registrar_asistencia_docente(request: RegistroAsistenciaDocente):
     """
-    Registra asistencia de docente (entrada o salida)
-    
-    ENTRADA: Si no hay sesión abierta, crea nueva sesión + asistencia
-    SALIDA: Si hay sesión abierta, actualiza asistencia existente
+    Registra entrada o salida de docente
     """
+    num_doc = request.num_doc
+    horario_id = request.horario_id
+    fecha = request.fecha
+    hora = request.hora
+    aula = request.aula
+    tipo_sesion = request.tipo_sesion.lower()
+
     conn = None
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        
-        # Obtener usuario
-        cursor.execute("""
-            SELECT u.id FROM usuarios u
-            WHERE u.num_doc = %s AND u.activo = true
-        """, (request.num_doc,))
-        
-        usuario: Any = cursor.fetchone()
-        if usuario is None:
-            raise HTTPException(status_code=404, detail="Usuario no encontrado")
-        
-        usuario_id = usuario['id']
-        timestamp_entrada = f"{request.fecha} {request.hora}"
-        
-        # Buscar si hay sesión abierta para este horario en esta fecha
-        cursor.execute("""
-            SELECT id, aula
-            FROM sesiones_clase
-            WHERE horario_id = %s AND fecha = %s AND estado = 'abierta'
-            LIMIT 1
-        """, (request.horario_id, request.fecha))
-        
-        sesion_abierta: Any = cursor.fetchone()
-        
-        if not sesion_abierta:
-            # ★ ENTRADA: No hay sesión abierta
-            print(f"[DEBUG] ENTRADA DOCENTE - Creando nueva sesión")
-            
-            # PRIMERO: Verificar si el docente ya tiene CUALQUIER sesión abierta
-            cursor.execute("""
-                SELECT id, horario_id, fecha, aula
-                FROM sesiones_clase
-                WHERE creado_por = %s AND estado = 'abierta'
-                LIMIT 1
-            """, (usuario_id,))
-            
-            otra_sesion_abierta: Any = cursor.fetchone()
-            
-            if otra_sesion_abierta:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Ya tienes una sesión abierta (fecha: {otra_sesion_abierta['fecha']}). Debes cerrarla primero antes de abrir una nueva."
-                )
-            
-            # Crear nueva sesión
-            cursor.execute("""
-                INSERT INTO sesiones_clase
-                (horario_id, fecha, docente_asistio, creado_por, aula, estado)
-                VALUES (%s, %s, true, %s, %s, 'abierta')
-                RETURNING id
-            """, (request.horario_id, request.fecha, usuario_id, request.aula))
-            
-            conn.commit()
-            sesion: Any = cursor.fetchone()
-            sesion_id = sesion['id']
-            
-            # Crear registro de asistencia del docente
-            cursor.execute("""
-                INSERT INTO asistencias
-                (horario_id, usuario_id, hora_entrada, metodo_verificacion, estado, aula, fecha, sesion_id)
-                VALUES (%s, %s, %s::timestamp, 'Biometría', 'inasistencia', %s, %s, %s)
-                RETURNING id
-            """, (request.horario_id, usuario_id, timestamp_entrada, request.aula, request.fecha, sesion_id))
-            
-            conn.commit()
-            
-            return {
-                "exito": True,
-                "tipo": "entrada",
-                "mensaje": "Entrada registrada. Sesión abierta.",
-                "sesion_id": sesion_id
-            }
 
-        else:
-            # ★ SALIDA: Hay sesión abierta
-            print(f"[DEBUG] SALIDA DOCENTE - Sesión abierta encontrada")
-            
-            sesion_id = sesion_abierta['id']
-            
-            # Buscar registro de asistencia del docente en esta sesión
-            cursor.execute("""
-                SELECT id, hora_salida, hora_entrada, estado
-                FROM asistencias
-                WHERE usuario_id = %s AND sesion_id = %s
-                LIMIT 1
-            """, (usuario_id, sesion_id))
-            
-            registro_asistencia: Any = cursor.fetchone()
-            
-            if not registro_asistencia:
-                raise HTTPException(
-                    status_code=400,
-                    detail="No hay registro de entrada para este docente"
-                )
-            
-            if registro_asistencia['hora_salida'] is not None:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Ya registraste salida en esta sesión"
-                )
-            
-            # Actualizar asistencia con hora_salida
-            timestamp_salida = f"{request.fecha} {request.hora}"
-            
-            # Obtener hora de inicio del horario y la hora de entrada registrada
-            cursor.execute("""
-                SELECT h.hora_inicio,
-                       a.hora_entrada
-                FROM horarios h
-                JOIN sesiones_clase sc ON sc.horario_id = h.id
-                JOIN asistencias a ON a.sesion_id = sc.id
-                WHERE sc.id = %s AND a.usuario_id = %s
-            """, (sesion_id, usuario_id))
-            
-            datos_comparacion: Any = cursor.fetchone()
-            hora_inicio_clase = datos_comparacion['hora_inicio'] if datos_comparacion else None
-            hora_entrada_registrada = datos_comparacion['hora_entrada'] if datos_comparacion else None
-            
-            # Determinar si hay retraso (más de 20 minutos)
-            estado_asistencia = 'presente'
-            
-            if hora_inicio_clase and hora_entrada_registrada:
-                from datetime import datetime
-                
-                # Convertir a datetime para comparar
-                hora_clase_dt = datetime.combine(hora_entrada_registrada.date(), hora_inicio_clase)
-                
-                # Calcular diferencia en minutos
-                diferencia = (hora_entrada_registrada - hora_clase_dt).total_seconds() / 60
-                
-                if diferencia > 20:
-                    estado_asistencia = 'tarde'
-            
-            # Determinar docente_asistio según estado de asistencia
-            docente_asistio = True
-            if estado_asistencia == 'inasistencia':
-                docente_asistio = False
-            
-            # Marcar sesión como completa y actualizar docente_asistio
-            cursor.execute("""
-                UPDATE sesiones_clase
-                SET estado = 'completa',
-                    docente_asistio = %s
-                WHERE id = %s
-            """, (docente_asistio, sesion_id))
-            
-            # Actualizar asistencia del docente
+        print(f"[DEBUG] Registrando asistencia docente {num_doc}")
+
+        # Obtener usuario_id
+        cursor.execute("SELECT id FROM usuarios WHERE num_doc = %s", (num_doc,))
+        usuario_result = cursor.fetchone()
+
+        if not usuario_result:
+            return {"exito": False, "detail": "Usuario no encontrado"}
+
+        usuario_id = usuario_result['id']
+
+        # Obtener horario_id y verificar que pertenece al docente
+        cursor.execute(
+            "SELECT id, hora_inicio FROM horarios WHERE id = %s AND docente_id = %s",
+            (horario_id, usuario_id)
+        )
+        horario = cursor.fetchone()
+
+        if not horario:
+            return {"exito": False, "detail": "Horario no encontrado para este docente"}
+
+        hora_inicio = horario['hora_inicio']
+
+        # Verificar si ya existe sesión abierta
+        cursor.execute("""
+            SELECT id FROM sesiones_clase
+            WHERE creado_por = %s AND fecha = %s AND estado = 'abierta'
+        """, (usuario_id, fecha))
+
+        sesion_existente = cursor.fetchone()
+
+        # ★ COMBINAR FECHA Y HORA PARA TIMESTAMP
+        fecha_hora_timestamp = f"{fecha} {hora}"
+
+        if sesion_existente:
+            # ★ REGISTRAR SALIDA
+            sesion_id = sesion_existente['id']
+
             cursor.execute("""
                 UPDATE asistencias
-                SET hora_salida = %s::timestamp,
-                    estado = %s
+                SET hora_salida = %s, estado = 'presente'
+                WHERE sesion_id = %s AND usuario_id = %s AND hora_entrada IS NOT NULL
+            """, (fecha_hora_timestamp, sesion_id, usuario_id))
+
+            # Actualizar sesión
+            from datetime import datetime
+            tiempo_entrada = datetime.strptime(f"{fecha} {hora_inicio}", "%Y-%m-%d %H:%M:%S")
+            tiempo_salida = datetime.strptime(fecha_hora_timestamp, "%Y-%m-%d %H:%M:%S")
+            
+            estado_docente = "presente"
+            if tiempo_salida > tiempo_entrada + timedelta(minutes=20):
+                estado_docente = "presente"
+
+            cursor.execute("""
+                UPDATE sesiones_clase
+                SET estado = 'completa', docente_asistio = true
                 WHERE id = %s
-            """, (timestamp_salida, estado_asistencia, registro_asistencia['id']))
-            
+            """, (sesion_id,))
+
             conn.commit()
-            
-            return {
-                "exito": True,
-                "tipo": "salida",
-                "mensaje": "Salida registrada. Sesión completada.",
-                "sesion_id": sesion_id
-            }
-    
-    except HTTPException:
-        raise
+            return {"exito": True, "mensaje": "Salida registrada correctamente"}
+
+        else:
+            # ★ REGISTRAR ENTRADA (CREAR SESIÓN)
+            import uuid
+            sesion_id = str(uuid.uuid4())
+
+            cursor.execute("""
+                INSERT INTO sesiones_clase (id, horario_id, fecha, creado_por, aula, estado, tipo, docente_asistio)
+                VALUES (%s, %s, %s, %s, %s, 'abierta', %s, false)
+            """, (sesion_id, horario_id, fecha, usuario_id, aula, tipo_sesion))
+
+            cursor.execute("""
+                INSERT INTO asistencias (id, horario_id, usuario_id, hora_entrada, metodo_verificacion, estado, aula, fecha, sesion_id)
+                VALUES (%s, %s, %s, %s, 'Biometría', 'inasistencia', %s, %s, %s)
+            """, (str(uuid.uuid4()), horario_id, usuario_id, fecha_hora_timestamp, aula, fecha, sesion_id))
+
+            conn.commit()
+            return {"exito": True, "mensaje": "Entrada registrada correctamente"}
+
     except Exception as e:
+        print(f"[ERROR] en registrar_asistencia_docente: {str(e)}")
         if conn:
             conn.rollback()
-        print(f"[ERROR] en registrar_asistencia_docente: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"exito": False, "detail": str(e)}
     finally:
         if conn:
             conn.close()
@@ -617,54 +521,6 @@ def obtener_docente_sesion(request: ObtenerDocenteSesion):
     except Exception as e:
         print(f"[ERROR] en obtener_docente_sesion: {str(e)}")
         return {"existe": False}
-    finally:
-        if conn:
-            conn.close()
-
-@router.post("/asistencia/obtener-metodo-entrada")
-def obtener_metodo_entrada(request: ObtenerMetodoEntrada):
-    """
-    Obtiene el método de verificación usado en la entrada de un estudiante
-    """
-    conn = None
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # Obtener usuario_id
-        cursor.execute("""
-            SELECT id FROM usuarios WHERE num_doc = %s
-        """, (request.num_doc,))
-        
-        usuario: Any = cursor.fetchone()
-        if usuario is None:
-            return {"encontrado": False}
-        
-        usuario_id = usuario['id']
-        
-        # Obtener método de entrada
-        cursor.execute("""
-            SELECT metodo_verificacion
-            FROM asistencias
-            WHERE usuario_id = %s AND sesion_id = %s AND hora_entrada IS NOT NULL
-            LIMIT 1
-        """, (usuario_id, request.sesion_id))
-        
-        registro: Any = cursor.fetchone()
-        
-        if registro is None:
-            return {"encontrado": False}
-        
-        return {
-            "encontrado": True,
-            "metodo_entrada": registro['metodo_verificacion']
-        }
-        
-    except Exception as e:
-        print(f"[ERROR] en obtener_metodo_entrada: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return {"encontrado": False}
     finally:
         if conn:
             conn.close()
@@ -847,55 +703,80 @@ def registrar_asistencia_estudiante_con_metodo(request: RegistroAsistenciaEstudi
             conn.close()
 
 @router.post("/docente/sesiones-abierta-por-fecha")
-def verificar_sesiones_docente(request: VerificarSesionesDocente):
+def verificar_sesiones_docente(request: dict):
     """
-    Verifica si un docente tiene sesiones abiertas en una fecha específica
+    Verifica si hay sesiones abiertas para el docente en una fecha.
+    Retorna TODA la información necesaria en UNA llamada.
     """
+    num_doc = request.get("num_doc")
+    fecha = request.get("fecha")
+    
     conn = None
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Obtener docente_id
-        cursor.execute("""
-            SELECT id FROM usuarios WHERE num_doc = %s
-        """, (request.num_doc,))
+        print(f"[DEBUG] Verificando sesiones abiertas para {num_doc} en {fecha}")
         
-        usuario: Any = cursor.fetchone()
-        if usuario is None:
-            return {"existe": False, "hay_sesiones": False}
+        # Obtener usuario_id (docente)
+        cursor.execute(
+            "SELECT id FROM usuarios WHERE num_doc = %s",
+            (num_doc,)
+        )
+        resultado_usuario = cursor.fetchone()
         
-        docente_id = usuario['id']
+        if not resultado_usuario:
+            return {"hay_sesiones": False}
         
-        # Buscar sesiones abiertas creadas por este docente en esta fecha
-        cursor.execute("""
-            SELECT id, horario_id, aula, created_at
-            FROM sesiones_clase
-            WHERE creado_por = %s AND fecha = %s AND estado = 'abierta'
-            LIMIT 1
-        """, (docente_id, request.fecha))
+        usuario_id = resultado_usuario['id']
         
-        sesion: Any = cursor.fetchone()
+        # Query que obtiene la sesión abierta CON TODA LA INFORMACIÓN
+        query = """
+        SELECT 
+            s.id as sesion_id,
+            h.id as horario_id,
+            s.aula,
+            a.nombre as asignatura_nombre,
+            a.codigo as asignatura_codigo,
+            h.grupo,
+            h.hora_inicio,
+            h.hora_fin
+        FROM sesiones_clase s
+        JOIN horarios h ON s.horario_id = h.id
+        JOIN asignaturas a ON h.asignatura_id = a.id
+        WHERE s.creado_por = %s
+          AND s.fecha = %s
+          AND s.estado = 'abierta'
+        LIMIT 1;
+        """
         
-        if sesion is None:
-            return {"existe": True, "hay_sesiones": False}
+        cursor.execute(query, (usuario_id, fecha))
+        sesion = cursor.fetchone()
         
+        if not sesion:
+            print("[DEBUG] No hay sesiones abiertas")
+            return {"hay_sesiones": False}
+        
+        print(f"[DEBUG] Sesión abierta encontrada: {sesion['sesion_id']}")
         return {
-            "existe": True,
             "hay_sesiones": True,
-            "sesion_id": str(sesion['id']),
+            "sesion_id": str(sesion['sesion_id']),
             "horario_id": str(sesion['horario_id']),
-            "aula": sesion['aula']
+            "aula": sesion['aula'],
+            "asignatura_nombre": sesion['asignatura_nombre'],
+            "asignatura_codigo": sesion['asignatura_codigo'],
+            "grupo": sesion['grupo'],
+            "hora_inicio": sesion['hora_inicio'],
+            "hora_fin": sesion['hora_fin']
         }
         
     except Exception as e:
         print(f"[ERROR] en verificar_sesiones_docente: {str(e)}")
-        return {"existe": False, "hay_sesiones": False}
+        return {"hay_sesiones": False, "error": str(e)}
     finally:
         if conn:
             conn.close()
-
-
+            
 @router.post("/docente/asignaturas-por-dia")
 def obtener_asignaturas_docente_por_dia(request: ObtenerAsignaturasDocentePorDia):
     """
@@ -962,7 +843,6 @@ def obtener_asignaturas_docente_por_dia(request: ObtenerAsignaturasDocentePorDia
     finally:
         if conn:
             conn.close()
-
 
 @router.post("/docente/horarios-asignatura")
 def obtener_horarios_asignatura_docente(request: ObtenerHorariosAsignatura):
@@ -1035,50 +915,6 @@ def obtener_horarios_asignatura_docente(request: ObtenerHorariosAsignatura):
         if conn:
             conn.close()
 
-
-@router.post("/estudiante/sesiones-abiertas-por-fecha")
-def obtener_sesiones_abiertas_por_fecha(request: ObtenerSesionesAbiertasPorFecha):
-    """
-    Obtiene todas las sesiones abiertas en una fecha específica
-    """
-    conn = None
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT id, horario_id, aula, created_at
-            FROM sesiones_clase
-            WHERE fecha = %s AND estado = 'abierta'
-            ORDER BY created_at
-        """, (request.fecha,))
-        
-        sesiones = []
-        while True:
-            row: Any = cursor.fetchone()
-            if row is None:
-                break
-            
-            sesiones.append({
-                "sesion_id": str(row['id']),
-                "horario_id": str(row['horario_id']),
-                "aula": row['aula'],
-                "created_at": str(row['created_at'])
-            })
-        
-        return {
-            "hay_sesiones": len(sesiones) > 0,
-            "sesiones": sesiones
-        }
-        
-    except Exception as e:
-        print(f"[ERROR] en obtener_sesiones_abiertas_por_fecha: {str(e)}")
-        return {"hay_sesiones": False, "sesiones": []}
-    finally:
-        if conn:
-            conn.close()
-
-
 @router.post("/horarios/datos")
 def obtener_datos_horario(request: ObtenerDatosHorario):
     """
@@ -1109,98 +945,6 @@ def obtener_datos_horario(request: ObtenerDatosHorario):
         
     except Exception as e:
         print(f"[ERROR] en obtener_datos_horario: {str(e)}")
-        return {"existe": False}
-    finally:
-        if conn:
-            conn.close()
-
-
-@router.post("/estudiante/verificar-matricula")
-def verificar_matricula_estudiante(request: VerificarMatriculaEstudiante):
-    """
-    Verifica si un estudiante está matriculado en una asignatura con un grupo específico
-    """
-    conn = None
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # Obtener estudiante_id
-        cursor.execute("""
-            SELECT id FROM usuarios WHERE num_doc = %s
-        """, (request.num_doc,))
-        
-        usuario: Any = cursor.fetchone()
-        if usuario is None:
-            return {"matriculado": False}
-        
-        usuario_id = usuario['id']
-        
-        # Verificar matrícula
-        cursor.execute("""
-            SELECT id FROM matriculas
-            WHERE usuario_id = %s AND asignatura_id = %s AND grupo = %s AND estado = 'activa'
-            LIMIT 1
-        """, (usuario_id, request.asignatura_id, request.grupo))
-        
-        matricula: Any = cursor.fetchone()
-        
-        return {
-            "matriculado": matricula is not None
-        }
-        
-    except Exception as e:
-        print(f"[ERROR] en verificar_matricula_estudiante: {str(e)}")
-        return {"matriculado": False}
-    finally:
-        if conn:
-            conn.close()
-
-
-@router.post("/estudiante/asistencia-por-sesion")
-def obtener_asistencia_estudiante_por_sesion(request: ObtenerAsistenciaEstudiantePorSesion):
-    """
-    Obtiene el registro de asistencia de un estudiante para una sesión específica
-    Si existe y está en estado "inasistencia", retorna los datos para permitir salida
-    """
-    conn = None
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # Obtener estudiante_id
-        cursor.execute("""
-            SELECT id FROM usuarios WHERE num_doc = %s
-        """, (request.num_doc,))
-        
-        usuario: Any = cursor.fetchone()
-        if usuario is None:
-            return {"existe": False}
-        
-        usuario_id = usuario['id']
-        
-        # Buscar registro de asistencia en estado "inasistencia"
-        cursor.execute("""
-            SELECT id, hora_entrada, metodo_verificacion
-            FROM asistencias
-            WHERE usuario_id = %s AND sesion_id = %s AND estado = 'inasistencia'
-            LIMIT 1
-        """, (usuario_id, request.sesion_id))
-        
-        asistencia: Any = cursor.fetchone()
-        
-        if asistencia is None:
-            return {"existe": False}
-        
-        return {
-            "existe": True,
-            "asistencia_id": str(asistencia['id']),
-            "hora_entrada": str(asistencia['hora_entrada']),
-            "metodo_verificacion": asistencia['metodo_verificacion']
-        }
-        
-    except Exception as e:
-        print(f"[ERROR] en obtener_asistencia_estudiante_por_sesion: {str(e)}")
         return {"existe": False}
     finally:
         if conn:
@@ -1300,44 +1044,6 @@ def obtener_datos_asignatura(request: ObtenerDatosAsignatura):
         if conn:
             conn.close()
 
-@router.post("/horarios/completo")
-def obtener_horario_completo(request: ObtenerHorarioCompleto):
-    """
-    Obtiene todos los datos de un horario (asignatura_id, grupo, hora_inicio, hora_fin, dia_semana)
-    """
-    conn = None
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT asignatura_id, grupo, hora_inicio, hora_fin, dia_semana
-            FROM horarios
-            WHERE id = %s
-            LIMIT 1
-        """, (request.horario_id,))
-        
-        horario: Any = cursor.fetchone()
-        
-        if horario is None:
-            return {"existe": False}
-        
-        return {
-            "existe": True,
-            "asignatura_id": str(horario['asignatura_id']),
-            "grupo": horario['grupo'],
-            "hora_inicio": str(horario['hora_inicio']),
-            "hora_fin": str(horario['hora_fin']),
-            "dia_semana": horario['dia_semana']
-        }
-        
-    except Exception as e:
-        print(f"[ERROR] en obtener_horario_completo: {str(e)}")
-        return {"existe": False}
-    finally:
-        if conn:
-            conn.close()
-
 @router.post("/admin/verificar-pin")
 def verificar_pin_admin(request: VerificacionPinAdmin):
     """
@@ -1378,4 +1084,379 @@ def verificar_pin_admin(request: VerificacionPinAdmin):
     finally:
         if conn:
             conn.close()
+
+@router.post("/estudiante/sesiones-disponibles-para-entrada")
+def obtener_sesiones_disponibles_para_entrada(request: SesionesDisponiblesRequest):
+    """
+    Obtiene TODAS las sesiones donde el estudiante puede registrar entrada.
+    El estudiante debe estar matriculado en la asignatura/grupo y NO tener entrada aún.
+    """
+    num_doc = request.num_doc
+    fecha = request.fecha
+    
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        print(f"[DEBUG] Obteniendo sesiones disponibles para {num_doc} en {fecha}")
+        
+        # Obtener usuario_id
+        cursor.execute(
+            "SELECT id FROM usuarios WHERE num_doc = %s",
+            (num_doc,)
+        )
+        resultado_usuario = cursor.fetchone()
+        
+        if not resultado_usuario:
+            return {"encontradas": False, "cantidad": 0, "sesiones": []}
+        
+        usuario_id = resultado_usuario['id']
+        
+        # Query que obtiene todas las sesiones válidas en UNA llamada
+        query = """
+        SELECT DISTINCT 
+            s.id as sesion_id,
+            a.nombre as asignatura_nombre,
+            a.codigo as asignatura_codigo,
+            h.grupo,
+            h.id as horario_id,
+            h.aula,
+            h.hora_inicio,
+            h.hora_fin,
+            h.dia_semana
+        FROM sesiones_clase s
+        JOIN horarios h ON s.horario_id = h.id
+        JOIN asignaturas a ON h.asignatura_id = a.id
+        WHERE s.estado = 'abierta'
+          AND s.fecha = %s
+          AND h.id IN (
+            SELECT h2.id FROM horarios h2
+            JOIN matriculas m ON h2.asignatura_id = m.asignatura_id
+            WHERE m.usuario_id = %s
+              AND m.grupo = h.grupo
+              AND m.estado = 'activa'
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM asistencias
+            WHERE sesion_id = s.id
+              AND usuario_id = %s
+              AND hora_entrada IS NOT NULL
+          )
+        ORDER BY h.hora_inicio;
+        """
+        
+        cursor.execute(query, (fecha, usuario_id, usuario_id))
+        sesiones = cursor.fetchall()
+        
+        if not sesiones:
+            return {"encontradas": False, "cantidad": 0, "sesiones": []}
+        
+        # Formatear respuesta
+        sesiones_formateadas = [
+            {
+                "sesion_id": str(s['sesion_id']),
+                "asignatura_nombre": s['asignatura_nombre'],
+                "asignatura_codigo": s['asignatura_codigo'],
+                "grupo": s['grupo'],
+                "horario_id": str(s['horario_id']),
+                "aula": s['aula'],
+                "hora_inicio": s['hora_inicio'],
+                "hora_fin": s['hora_fin'],
+                "dia_semana": s['dia_semana']
+            }
+            for s in sesiones
+        ]
+        
+        print(f"[DEBUG] Encontradas {len(sesiones_formateadas)} sesiones disponibles")
+        return {
+            "encontradas": True,
+            "cantidad": len(sesiones_formateadas),
+            "sesiones": sesiones_formateadas
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] en obtener_sesiones_disponibles_para_entrada: {str(e)}")
+        return {"encontradas": False, "cantidad": 0, "sesiones": [], "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+@router.post("/estudiante/sesion-para-salida")
+def obtener_sesion_para_salida(request: SesionParaSalidaRequest):
+    """
+    Obtiene la ÚNICA sesión abierta donde el estudiante tiene entrada SIN salida.
+    Un estudiante nunca debe tener más de una.
+    """
+    num_doc = request.num_doc
+    
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        print(f"[DEBUG] Obteniendo sesión para salida de {num_doc}")
+        
+        # Obtener usuario_id
+        cursor.execute(
+            "SELECT id FROM usuarios WHERE num_doc = %s",
+            (num_doc,)
+        )
+        resultado_usuario = cursor.fetchone()
+        
+        if not resultado_usuario:
+            return {"encontrada": False}
+        
+        usuario_id = resultado_usuario['id']
+        
+        # Query que obtiene la sesión sin salida
+        query = """
+        SELECT DISTINCT
+            s.id as sesion_id,
+            a.nombre as asignatura_nombre,
+            h.grupo,
+            s.horario_id
+        FROM sesiones_clase s
+        JOIN horarios h ON s.horario_id = h.id
+        JOIN asignaturas a ON h.asignatura_id = a.id
+        WHERE s.estado = 'abierta'
+          AND h.id IN (
+            SELECT h2.id FROM horarios h2
+            JOIN matriculas m ON h2.asignatura_id = m.asignatura_id
+            WHERE m.usuario_id = %s
+              AND m.grupo = h.grupo
+              AND m.estado = 'activa'
+          )
+          AND EXISTS (
+            SELECT 1 FROM asistencias
+            WHERE sesion_id = s.id
+              AND usuario_id = %s
+              AND hora_entrada IS NOT NULL
+              AND hora_salida IS NULL
+          )
+        LIMIT 1;
+        """
+        
+        cursor.execute(query, (usuario_id, usuario_id))
+        sesion = cursor.fetchone()
+        
+        if not sesion:
+            print("[DEBUG] No hay sesión abierta para salida")
+            return {"encontrada": False}
+        
+        print(f"[DEBUG] Sesión encontrada: {sesion['sesion_id']}")
+        return {
+            "encontrada": True,
+            "sesion_id": str(sesion['sesion_id']),
+            "asignatura_nombre": sesion['asignatura_nombre'],
+            "grupo": sesion['grupo'],
+            "horario_id": str(sesion['horario_id'])
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] en obtener_sesion_para_salida: {str(e)}")
+        return {"encontrada": False, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+@router.post("/docente/nombre-por-sesion")
+def obtener_nombre_docente_por_sesion(request: dict):
+    """
+    Obtiene el nombre del docente creador de la sesión.
+    Más rápido que obtenerDocenteSesion porque hace TODO en una query.
+    """
+    sesion_id = request.get("sesion_id")
+    
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        query = """
+        SELECT u.nombres, u.apellidos
+        FROM sesiones_clase s
+        JOIN usuarios u ON s.creado_por = u.id
+        WHERE s.id = %s
+        LIMIT 1;
+        """
+        
+        cursor.execute(query, (sesion_id,))
+        resultado = cursor.fetchone()
+        
+        if not resultado:
+            return {"existe": False}
+        
+        return {
+            "existe": True,
+            "nombre_docente": f"{resultado['nombres']} {resultado['apellidos']}"
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] en obtener_nombre_docente_por_sesion: {str(e)}")
+        return {"existe": False, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+@router.post("/estudiante/metodo-entrada-para-salida")
+def obtener_metodo_entrada_para_salida(request: MetodoEntradaRequest):
+    """
+    Obtiene el método de verificación usado en entrada.
+    Busca el registro de asistencia sin salida para la sesión.
+    """
+    num_doc = request.num_doc
+    sesion_id = request.sesion_id
+    
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Obtener usuario_id
+        cursor.execute(
+            "SELECT id FROM usuarios WHERE num_doc = %s",
+            (num_doc,)
+        )
+        resultado_usuario = cursor.fetchone()
+        
+        if not resultado_usuario:
+            return {"existe": False}
+        
+        usuario_id = resultado_usuario['id']
+        
+        # Buscar registro de asistencia sin salida
+        cursor.execute("""
+            SELECT metodo_verificacion
+            FROM asistencias
+            WHERE sesion_id = %s
+              AND usuario_id = %s
+              AND hora_entrada IS NOT NULL
+              AND hora_salida IS NULL
+            LIMIT 1;
+        """, (sesion_id, usuario_id))
+        
+        resultado = cursor.fetchone()
+        
+        if not resultado:
+            return {"existe": False}
+        
+        return {
+            "existe": True,
+            "metodo_verificacion": resultado['metodo_verificacion']
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] en obtener_metodo_entrada_para_salida: {str(e)}")
+        return {"existe": False, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+@router.post("/docente/verificar-pin")
+def verificar_pin_docente(request: VerificacionPinDocenteRequest):
+    """
+    Verifica si el PIN corresponde específicamente a este docente
+    """
+    num_doc = request.num_doc
+    pin = request.pin
+    
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        print(f"[DEBUG] Verificando PIN docente para {num_doc}")
+        
+        # Obtener usuario_id del docente
+        cursor.execute(
+            "SELECT id FROM usuarios WHERE num_doc = %s",
+            (num_doc,)
+        )
+        usuario_result = cursor.fetchone()
+        
+        if not usuario_result:
+            return {"valido": False, "mensaje": "Usuario no encontrado"}
+        
+        usuario_id = usuario_result['id']
+        
+        # Verificar que el PIN pertenece a este docente específicamente
+        cursor.execute("""
+            SELECT id FROM pin_acceso
+            WHERE pin = %s 
+              AND usuario_id = %s 
+              AND tipo_rol = 'Docente' 
+              AND activo = true
+            LIMIT 1
+        """, (pin, usuario_id))
+        
+        resultado = cursor.fetchone()
+        
+        if resultado is None:
+            print(f"[DEBUG] PIN inválido para {num_doc}")
+            return {
+                "valido": False,
+                "mensaje": "PIN incorrecto"
+            }
+        
+        print(f"[DEBUG] PIN válido para {num_doc}")
+        return {
+            "valido": True,
+            "usuario_id": str(usuario_id),
+            "mensaje": "PIN verificado"
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] en verificar_pin_docente: {str(e)}")
+        return {"valido": False, "mensaje": "Error en verificación"}
+    finally:
+        if conn:
+            conn.close()
+
+@router.post("/docente/usuario-por-sesion")
+def obtener_usuario_docente_por_sesion(request: dict):
+    """
+    Obtiene el usuario_id del docente que creó la sesión
+    """
+    sesion_id = request.get("sesion_id")
+    
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT creado_por FROM sesiones_clase WHERE id = %s LIMIT 1
+        """, (sesion_id,))
+        
+        resultado = cursor.fetchone()
+        
+        if not resultado:
+            return {"existe": False}
+        
+        docente_id = resultado['creado_por']
+        
+        # Obtener num_doc del docente
+        cursor.execute("""
+            SELECT num_doc FROM usuarios WHERE id = %s LIMIT 1
+        """, (docente_id,))
+        
+        usuario = cursor.fetchone()
+        
+        if not usuario:
+            return {"existe": False}
+        
+        return {
+            "existe": True,
+            "num_doc": usuario['num_doc']
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] en obtener_usuario_docente_por_sesion: {str(e)}")
+        return {"existe": False, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
 

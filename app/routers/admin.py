@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from app.database import get_connection
+from app.reconciliation import conciliar_sesiones_pasadas
 from typing import Optional, Any
 
 router = APIRouter()
@@ -238,6 +239,7 @@ def crear_horario(horario: HorarioCrear):
         """, (horario.asignatura_id, horario.docente_id, horario.dia_semana,
               horario.hora_inicio, horario.hora_fin, horario.aula, horario.grupo, horario.cupo_maximo))
         conn.commit()
+        conciliar_sesiones_pasadas(conn)
         return {"mensaje": "Horario creado", "horario": cursor.fetchone()}
     except Exception as e:
         if conn: conn.rollback()
@@ -318,6 +320,7 @@ def crear_matricula(matricula: MatriculaCrear):
               matricula.semestre, matricula.fecha_inicio,
               matricula.programa_id))
         conn.commit()
+        conciliar_sesiones_pasadas(conn)
         return {"mensaje": "Matrícula creada", "matricula": cursor.fetchone()}
     except Exception as e:
         if conn: conn.rollback()
@@ -437,16 +440,25 @@ def actualizar_horario(horario_id: str, datos: HorarioCrear):
     try:
         conn = get_connection()
         cursor = conn.cursor()
+
+        # Actualizar el horario
         cursor.execute("""
             UPDATE horarios SET asignatura_id = %s, docente_id = %s, dia_semana = %s,
                 hora_inicio = %s, hora_fin = %s, aula = %s, grupo = %s, cupo_maximo = %s
             WHERE id = %s RETURNING id, dia_semana, hora_inicio, hora_fin, aula, grupo, cupo_maximo
         """, (datos.asignatura_id, datos.docente_id, datos.dia_semana,
               datos.hora_inicio, datos.hora_fin, datos.aula, datos.grupo, datos.cupo_maximo, horario_id))
-        conn.commit()
+        
         result = cursor.fetchone()
         if not result:
+            conn.rollback()
             raise HTTPException(status_code=404, detail="Horario no encontrado")
+        
+        conn.commit()
+
+        # Ejecutar la conciliación tras la actualización del horario
+        conciliar_sesiones_pasadas(conn)
+
         return {"mensaje": "Horario actualizado", "horario": result}
     except HTTPException: raise
     except Exception as e:

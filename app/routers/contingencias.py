@@ -29,6 +29,7 @@ class SesionCrear(BaseModel):
     docente_asistio: bool = True
     motivo_ausencia_docente: Optional[str] = None
     creado_por: str  # id del usuario que registra
+    tipo: Optional[str] = "ordinaria"
 
 # ══════════════════════════════════════════════
 # CONTINGENCIAS
@@ -202,7 +203,8 @@ def listar_sesiones():
                 u.apellidos AS apellido_docente,
                 h.aula,
                 h.hora_inicio,
-                h.hora_fin
+                h.hora_fin,
+                s.tipo
             FROM sesiones_clase s
             JOIN horarios h ON h.id = s.horario_id
             JOIN asignaturas a ON a.id = h.asignatura_id
@@ -222,15 +224,16 @@ def crear_sesion(sesion: SesionCrear):
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO sesiones_clase 
-                (horario_id, fecha, docente_asistio, motivo_ausencia_docente, creado_por)
-            VALUES (%s, %s, %s, %s, %s)
-            RETURNING id, fecha, docente_asistio
+                (horario_id, fecha, docente_asistio, motivo_ausencia_docente, creado_por, tipo)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING id, fecha, docente_asistio, tipo
         """, (
             sesion.horario_id,
             sesion.fecha,
             sesion.docente_asistio,
             sesion.motivo_ausencia_docente,
-            sesion.creado_por
+            sesion.creado_por,
+            sesion.tipo
         ))
         conn.commit()
         nueva = cursor.fetchone()

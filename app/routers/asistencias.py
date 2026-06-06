@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from app.database import get_connection
+from app.reconciliation import conciliar_sesiones_pasadas
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime, timedelta
@@ -51,7 +52,7 @@ def reporte_estudiante(num_doc: str):
                 COUNT(*) FILTER (WHERE s.docente_asistio = TRUE
                     AND COALESCE(a.estado, 'ausente') IN ('presente','tarde')) AS asistencias,
                 COUNT(*) FILTER (WHERE s.docente_asistio = TRUE
-                    AND COALESCE(a.estado, 'ausente') = 'ausente') AS inasistencias,
+                    AND COALESCE(a.estado, 'ausente') IN ('ausente', 'inasistencia')) AS inasistencias,
                 CASE
                     WHEN COUNT(*) FILTER (WHERE s.docente_asistio = TRUE) = 0 THEN 0
                     ELSE ROUND(
@@ -66,7 +67,7 @@ def reporte_estudiante(num_doc: str):
             JOIN asignaturas asig ON asig.id = h.asignatura_id
             JOIN matriculas m ON m.asignatura_id = asig.id AND m.grupo = h.grupo
             JOIN usuarios u ON u.id = m.usuario_id
-            LEFT JOIN asistencias a ON a.horario_id = h.id AND a.usuario_id = u.id AND DATE(a.hora_entrada) = s.fecha
+            LEFT JOIN asistencias a ON a.usuario_id = u.id AND a.sesion_id = s.id
             WHERE u.num_doc = %s
             GROUP BY u.nombres, u.apellidos, asig.nombre, h.grupo
         """, (num_doc,))
@@ -93,6 +94,7 @@ def listar_asistencias(docente_id: Optional[str] = None, usuario_id: Optional[st
     conn = None
     try:
         conn = get_connection()
+        conciliar_sesiones_pasadas(conn)
         cursor = conn.cursor()
         
         # 1. Obtener semestre activo
@@ -133,7 +135,8 @@ def listar_asistencias(docente_id: Optional[str] = None, usuario_id: Optional[st
                 (SELECT a2.hora_salida FROM asistencias a2 WHERE a2.usuario_id = h.docente_id AND a2.sesion_id = s.id LIMIT 1) AS docente_hora_salida,
                 (SELECT a2.metodo_verificacion FROM asistencias a2 WHERE a2.usuario_id = h.docente_id AND a2.sesion_id = s.id LIMIT 1) AS docente_metodo_verificacion,
                 (SELECT a2.estado FROM asistencias a2 WHERE a2.usuario_id = h.docente_id AND a2.sesion_id = s.id LIMIT 1) AS docente_estado_asistencia,
-                s.estado AS estado_sesion
+                s.estado AS estado_sesion,
+                s.tipo AS tipo_sesion
             FROM horarios h
             JOIN asignaturas asig ON asig.id = h.asignatura_id
             JOIN usuarios doc ON doc.id = h.docente_id
@@ -142,7 +145,7 @@ def listar_asistencias(docente_id: Optional[str] = None, usuario_id: Optional[st
             JOIN programas prog ON prog.id = asig.programa_id
             JOIN facultades fac ON fac.id = asig.facultad_id
             LEFT JOIN sesiones_clase s ON s.horario_id = h.id
-            LEFT JOIN asistencias a ON a.usuario_id = u.id AND a.horario_id = s.horario_id AND date(a.hora_entrada) = s.fecha
+            LEFT JOIN asistencias a ON a.usuario_id = u.id AND a.sesion_id = s.id
             JOIN roles r ON r.id = u.rol_id
             WHERE r.nombre = 'Estudiante'
         """
@@ -189,7 +192,7 @@ def listar_asistencias(docente_id: Optional[str] = None, usuario_id: Optional[st
                 offset = dias_map[dia_sem.lower()]
                 expected_date = monday_of_current_week + timedelta(days=offset)
                 
-                if expected_date not in dates:
+                if expected_date not in dates and expected_date >= current_date:
                     students = {}
                     for r in rows:
                         if r.get('num_doc'):
