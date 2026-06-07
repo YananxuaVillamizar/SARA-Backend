@@ -39,7 +39,7 @@ def normalize_estado(estado_raw: str) -> str:
         return "Ausente"
 
 @router.get("/admin-stats")
-def get_admin_stats(rol: Optional[str] = "todos", semana: Optional[str] = "actual"):
+def get_admin_stats(rol: Optional[str] = "todos", semana: Optional[str] = "actual", usuario_autenticado_id: Optional[str] = None, rol_usuario: Optional[str] = None):
     """
     Retorna las estadísticas del dashboard administrativo usando Pandas.
     - Tasa de asistencia semanal por día (Lun-Vie).
@@ -68,46 +68,119 @@ def get_admin_stats(rol: Optional[str] = "todos", semana: Optional[str] = "actua
             fecha_fin = sem_row["fecha_fin"]
 
         # 2. Consultar métricas generales rápidas (activos vs registrados)
-        cursor.execute("""
-            SELECT COUNT(DISTINCT m.usuario_id) as count 
-            FROM matriculas m
-            JOIN usuarios u ON u.id = m.usuario_id
-            JOIN roles r ON r.id = u.rol_id
-            WHERE r.nombre = 'Estudiante'
-        """)
-        active_estudiantes = cursor.fetchone()["count"]
-        
-        cursor.execute("SELECT COUNT(*) as count FROM usuarios u JOIN roles r ON r.id = u.rol_id WHERE r.nombre = 'Estudiante'")
-        total_estudiantes = cursor.fetchone()["count"]
-        
-        estudiantes_value = f"{active_estudiantes} / {total_estudiantes}"
+        if rol_usuario == "Docente":
+            cursor.execute("""
+                SELECT COUNT(DISTINCT m.usuario_id) as count 
+                FROM matriculas m
+                JOIN usuarios u ON u.id = m.usuario_id
+                JOIN roles r ON r.id = u.rol_id
+                JOIN horarios h ON h.asignatura_id = m.asignatura_id AND h.grupo = m.grupo
+                WHERE r.nombre = 'Estudiante' AND h.docente_id = %s
+            """, (usuario_autenticado_id,))
+            active_estudiantes = cursor.fetchone()["count"]
+            
+            cursor.execute("""
+                SELECT COUNT(DISTINCT m.usuario_id) as count 
+                FROM matriculas m
+                JOIN usuarios u ON u.id = m.usuario_id
+                JOIN roles r ON r.id = u.rol_id
+                JOIN horarios h ON h.asignatura_id = m.asignatura_id AND h.grupo = m.grupo
+                WHERE r.nombre = 'Estudiante' AND h.docente_id = %s
+            """, (usuario_autenticado_id,))
+            total_estudiantes = cursor.fetchone()["count"]
+            
+            estudiantes_value = f"{active_estudiantes} / {total_estudiantes}"
+            docentes_value = "1 / 1"
+            
+            cursor.execute("""
+                SELECT COUNT(*) as count 
+                FROM contingencias c
+                JOIN asistencias a ON a.id = c.asistencia_id
+                JOIN horarios h ON h.id = a.horario_id
+                WHERE h.docente_id = %s AND c.estado = 'pendiente'
+            """, (usuario_autenticado_id,))
+            contingencias_pendientes = cursor.fetchone()["count"]
+            
+        elif rol_usuario == "Estudiante":
+            # Para Estudiantes, total_estudiantes representará sus materias matriculadas
+            cursor.execute("""
+                SELECT COUNT(*) as count
+                FROM matriculas m
+                WHERE m.usuario_id = %s
+            """, (usuario_autenticado_id,))
+            total_est_mat = cursor.fetchone()["count"]
+            estudiantes_value = f"{total_est_mat}"
+            
+            # total_docentes representará la cantidad de docentes de sus materias
+            cursor.execute("""
+                SELECT COUNT(DISTINCT h.docente_id) as count
+                FROM matriculas m
+                JOIN horarios h ON h.asignatura_id = m.asignatura_id AND h.grupo = m.grupo
+                WHERE m.usuario_id = %s
+            """, (usuario_autenticado_id,))
+            total_docs_mat = cursor.fetchone()["count"]
+            docentes_value = f"{total_docs_mat}"
+            
+            cursor.execute("""
+                SELECT COUNT(*) as count 
+                FROM contingencias 
+                WHERE solicitante_id = %s AND estado = 'pendiente'
+            """, (usuario_autenticado_id,))
+            contingencias_pendientes = cursor.fetchone()["count"]
+            
+        else:
+            cursor.execute("""
+                SELECT COUNT(DISTINCT m.usuario_id) as count 
+                FROM matriculas m
+                JOIN usuarios u ON u.id = m.usuario_id
+                JOIN roles r ON r.id = u.rol_id
+                WHERE r.nombre = 'Estudiante'
+            """)
+            active_estudiantes = cursor.fetchone()["count"]
+            
+            cursor.execute("SELECT COUNT(*) as count FROM usuarios u JOIN roles r ON r.id = u.rol_id WHERE r.nombre = 'Estudiante'")
+            total_estudiantes = cursor.fetchone()["count"]
+            
+            estudiantes_value = f"{active_estudiantes} / {total_estudiantes}"
 
-        cursor.execute("""
-            SELECT COUNT(DISTINCT h.docente_id) as count 
-            FROM horarios h
-            JOIN usuarios u ON u.id = h.docente_id
-            JOIN roles r ON r.id = u.rol_id
-            WHERE r.nombre = 'Docente'
-        """)
-        active_docentes = cursor.fetchone()["count"]
+            cursor.execute("""
+                SELECT COUNT(DISTINCT h.docente_id) as count 
+                FROM horarios h
+                JOIN usuarios u ON u.id = h.docente_id
+                JOIN roles r ON r.id = u.rol_id
+                WHERE r.nombre = 'Docente'
+            """)
+            active_docentes = cursor.fetchone()["count"]
 
-        cursor.execute("SELECT COUNT(*) as count FROM usuarios u JOIN roles r ON r.id = u.rol_id WHERE r.nombre = 'Docente'")
-        total_docentes = cursor.fetchone()["count"]
-        
-        docentes_value = f"{active_docentes} / {total_docentes}"
+            cursor.execute("SELECT COUNT(*) as count FROM usuarios u JOIN roles r ON r.id = u.rol_id WHERE r.nombre = 'Docente'")
+            total_docentes = cursor.fetchone()["count"]
+            
+            docentes_value = f"{active_docentes} / {total_docentes}"
 
-        cursor.execute("SELECT COUNT(*) as count FROM contingencias WHERE estado = 'pendiente'")
-        contingencias_pendientes = cursor.fetchone()["count"]
+            cursor.execute("SELECT COUNT(*) as count FROM contingencias WHERE estado = 'pendiente'")
+            contingencias_pendientes = cursor.fetchone()["count"]
 
         # 2.2 Calcular Cumplimiento Docente con Compensación en Pandas
-        cursor.execute("""
-            SELECT 
-                s.horario_id,
-                s.docente_asistio,
-                s.tipo
-            FROM sesiones_clase s
-            WHERE s.fecha >= %s AND s.fecha <= %s
-        """, (fecha_inicio, fecha_fin))
+        if rol_usuario == "Docente":
+            cursor.execute("""
+                SELECT 
+                    s.horario_id,
+                    s.docente_asistio,
+                    s.tipo
+                FROM sesiones_clase s
+                JOIN horarios h ON h.id = s.horario_id
+                WHERE s.fecha >= %s AND s.fecha <= %s
+                AND h.docente_id = %s
+            """, (fecha_inicio, fecha_fin, usuario_autenticado_id))
+        else:
+            cursor.execute("""
+                SELECT 
+                    s.horario_id,
+                    s.docente_asistio,
+                    s.tipo
+                FROM sesiones_clase s
+                WHERE s.fecha >= %s AND s.fecha <= %s
+            """, (fecha_inicio, fecha_fin))
         
         sesiones_raw = cursor.fetchall()
         cumplimiento_docente_pct = "100%"
@@ -173,6 +246,13 @@ def get_admin_stats(rol: Optional[str] = "todos", semana: Optional[str] = "actua
         else: # todos
             query_asistencias += " AND ((r.nombre = 'Estudiante' AND s.docente_asistio = TRUE) OR (r.nombre = 'Docente'))"
             
+        if rol_usuario == "Docente":
+            query_asistencias += " AND h.docente_id = %s"
+            params.append(usuario_autenticado_id)
+        elif rol_usuario == "Estudiante":
+            query_asistencias += " AND a.usuario_id = %s"
+            params.append(usuario_autenticado_id)
+            
         cursor.execute(query_asistencias, params)
         asistencias_raw = cursor.fetchall()
         
@@ -188,12 +268,12 @@ def get_admin_stats(rol: Optional[str] = "todos", semana: Optional[str] = "actua
                     "cumplimiento_docente": cumplimiento_docente_pct
                 },
                 "asistencia_semanal": [
-                    {"dia": "Lun", "presentes": 0, "ausentes": 0},
-                    {"dia": "Mar", "presentes": 0, "ausentes": 0},
-                    {"dia": "Mie", "presentes": 0, "ausentes": 0},
-                    {"dia": "Jue", "presentes": 0, "ausentes": 0},
-                    {"dia": "Vie", "presentes": 0, "ausentes": 0},
-                    {"dia": "Sab", "presentes": 0, "ausentes": 0}
+                    {"dia": "Lun", "a_tiempo": 0, "tardes": 0, "ausentes": 0, "presentes": 0},
+                    {"dia": "Mar", "a_tiempo": 0, "tardes": 0, "ausentes": 0, "presentes": 0},
+                    {"dia": "Mie", "a_tiempo": 0, "tardes": 0, "ausentes": 0, "presentes": 0},
+                    {"dia": "Jue", "a_tiempo": 0, "tardes": 0, "ausentes": 0, "presentes": 0},
+                    {"dia": "Vie", "a_tiempo": 0, "tardes": 0, "ausentes": 0, "presentes": 0},
+                    {"dia": "Sab", "a_tiempo": 0, "tardes": 0, "ausentes": 0, "presentes": 0}
                 ],
                 "permanencia_tendencia": [],
                 "alertas_desercion": [],
@@ -369,18 +449,23 @@ def get_admin_stats(rol: Optional[str] = "todos", semana: Optional[str] = "actua
         for dia in dias_es:
             df_dia = df_filtrado[df_filtrado["dia_norm"] == dia]
             if len(df_dia) > 0:
-                presentes = len(df_dia[df_dia["estado_norm"].isin(["Presente", "Tarde"])])
+                a_tiempo = len(df_dia[df_dia["estado_norm"] == "Presente"])
+                tardes = len(df_dia[df_dia["estado_norm"] == "Tarde"])
                 ausentes = len(df_dia[df_dia["estado_norm"] == "Ausente"])
                 semanal_data.append({
                     "dia": dia[:3],
-                    "presentes": presentes,
-                    "ausentes": ausentes
+                    "a_tiempo": a_tiempo,
+                    "tardes": tardes,
+                    "ausentes": ausentes,
+                    "presentes": a_tiempo + tardes
                 })
             else:
                 semanal_data.append({
                     "dia": dia[:3],
-                    "presentes": 0,
-                    "ausentes": 0
+                    "a_tiempo": 0,
+                    "tardes": 0,
+                    "ausentes": 0,
+                    "presentes": 0
                 })
 
 
@@ -494,10 +579,14 @@ def get_estudiante_stats(usuario_id: str):
                 h.aula,
                 h.hora_inicio,
                 h.hora_fin,
-                h.grupo
+                h.grupo,
+                s.id AS sesion_id,
+                a.estado AS asistencia_estado
             FROM matriculas m
             JOIN asignaturas asig ON asig.id = m.asignatura_id
             JOIN horarios h ON h.asignatura_id = asig.id AND h.grupo = m.grupo
+            LEFT JOIN sesiones_clase s ON s.horario_id = h.id AND s.fecha = CURRENT_DATE
+            LEFT JOIN asistencias a ON a.usuario_id = m.usuario_id AND a.sesion_id = s.id
             WHERE m.usuario_id = %s AND LOWER(h.dia_semana) = %s
         """, (usuario_id, dia_hoy))
         horarios_hoy = cursor.fetchall()
@@ -511,7 +600,9 @@ def get_estudiante_stats(usuario_id: str):
                 "dia_semana": dia_hoy.capitalize(),
                 "hora_inicio": str(h["hora_inicio"])[:5],
                 "hora_fin": str(h["hora_fin"])[:5],
-                "grupo": h["grupo"]
+                "grupo": h["grupo"],
+                "sesion_id": h["sesion_id"],
+                "asistencia_estado": h["asistencia_estado"]
             })
 
         if not clases_raw:
@@ -702,7 +793,7 @@ def calculate_row_permanence(row):
     return 0.0
 
 @router.get("/usuarios-filtro")
-def get_usuarios_filtro(rol: Optional[str] = "todos"):
+def get_usuarios_filtro(rol: Optional[str] = "todos", docente_id: Optional[str] = None):
     """
     Retorna la lista de usuarios activos para los filtros del dashboard.
     """
@@ -712,21 +803,62 @@ def get_usuarios_filtro(rol: Optional[str] = "todos"):
         cursor = conn.cursor()
         
         rol_clean = (rol or "todos").lower().strip()
-        query = """
-            SELECT u.id, u.nombres, u.apellidos, r.nombre as rol
-            FROM usuarios u
-            JOIN roles r ON r.id = u.rol_id
-            WHERE u.activo = TRUE
-        """
         params = []
-        if rol_clean == "estudiante":
-            query += " AND r.nombre = 'Estudiante'"
-        elif rol_clean == "docente":
-            query += " AND r.nombre = 'Docente'"
+        
+        if docente_id:
+            if rol_clean == "docente":
+                query = """
+                    SELECT u.id, u.nombres, u.apellidos, r.nombre as rol
+                    FROM usuarios u
+                    JOIN roles r ON r.id = u.rol_id
+                    WHERE u.activo = TRUE AND u.id = %s
+                """
+                params.append(docente_id)
+            elif rol_clean == "estudiante":
+                query = """
+                    SELECT DISTINCT u.id, u.nombres, u.apellidos, r.nombre as rol
+                    FROM usuarios u
+                    JOIN roles r ON r.id = u.rol_id
+                    JOIN matriculas m ON m.usuario_id = u.id
+                    JOIN horarios h ON h.asignatura_id = m.asignatura_id AND h.grupo = m.grupo
+                    WHERE u.activo = TRUE AND h.docente_id = %s AND r.nombre = 'Estudiante'
+                """
+                params.append(docente_id)
+            else:
+                query = """
+                    SELECT DISTINCT u.id, u.nombres, u.apellidos, r.nombre as rol
+                    FROM usuarios u
+                    JOIN roles r ON r.id = u.rol_id
+                    JOIN matriculas m ON m.usuario_id = u.id
+                    JOIN horarios h ON h.asignatura_id = m.asignatura_id AND h.grupo = m.grupo
+                    WHERE u.activo = TRUE AND h.docente_id = %s AND r.nombre = 'Estudiante'
+                    UNION
+                    SELECT u.id, u.nombres, u.apellidos, r.nombre as rol
+                    FROM usuarios u
+                    JOIN roles r ON r.id = u.rol_id
+                    WHERE u.activo = TRUE AND u.id = %s
+                """
+                params.extend([docente_id, docente_id])
         else:
-            query += " AND r.nombre IN ('Estudiante', 'Docente')"
+            query = """
+                SELECT u.id, u.nombres, u.apellidos, r.nombre as rol
+                FROM usuarios u
+                JOIN roles r ON r.id = u.rol_id
+                WHERE u.activo = TRUE
+            """
+            if rol_clean == "estudiante":
+                query += " AND r.nombre = 'Estudiante'"
+            elif rol_clean == "docente":
+                query += " AND r.nombre = 'Docente'"
+            else:
+                query += " AND r.nombre IN ('Estudiante', 'Docente')"
             
-        query += " ORDER BY u.apellidos ASC, u.nombres ASC"
+        # Nota: La ordenación de la consulta con UNION requiere que el ORDER BY sea al final
+        if "UNION" in query:
+            # En SQLite/PostgreSQL/MySQL, se puede ordenar el resultado del UNION
+            query += " ORDER BY apellidos ASC, nombres ASC"
+        else:
+            query += " ORDER BY u.apellidos ASC, u.nombres ASC"
         cursor.execute(query, params)
         users = cursor.fetchall()
         return users
@@ -789,7 +921,13 @@ def get_asignaturas_filtro(usuario_id: Optional[str] = None):
             conn.close()
 
 @router.get("/permanencia-stats")
-def get_permanencia_stats(rol: Optional[str] = "todos", usuario_id: Optional[str] = None, asignatura_id: Optional[str] = None):
+def get_permanencia_stats(
+    rol: Optional[str] = "todos",
+    usuario_id: Optional[str] = None,
+    asignatura_id: Optional[str] = None,
+    usuario_autenticado_id: Optional[str] = None,
+    rol_usuario: Optional[str] = None
+):
     """
     Retorna el promedio de permanencia en clase semana a semana filtrado.
     """
@@ -834,6 +972,10 @@ def get_permanencia_stats(rol: Optional[str] = "todos", usuario_id: Optional[str
         params = [fecha_inicio, fecha_fin]
         
         rol_clean = (rol or "todos").lower().strip()
+        if rol_usuario == "Estudiante":
+            usuario_id = usuario_autenticado_id
+            rol_clean = "estudiante"
+            
         if rol_clean == "estudiante":
             query += " AND r.nombre = 'Estudiante'"
         elif rol_clean == "docente":
@@ -846,6 +988,10 @@ def get_permanencia_stats(rol: Optional[str] = "todos", usuario_id: Optional[str
         if asignatura_id:
             query += " AND h.asignatura_id = %s"
             params.append(asignatura_id)
+            
+        if rol_usuario == "Docente":
+            query += " AND h.docente_id = %s"
+            params.append(usuario_autenticado_id)
             
         cursor.execute(query, params)
         result = cursor.fetchall()
