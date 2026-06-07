@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import auth, usuarios, asistencias, admin, contingencias, matriculas, hardware, dashboard
@@ -11,9 +12,12 @@ app = FastAPI(
 
 # CORS: permite que el dashboard web (que corre en otro puerto)
 # pueda hablar con esta API. Sin esto, el navegador bloquea las peticiones.
+allowed_origins_str = os.getenv("ALLOWED_ORIGINS", "*")
+allowed_origins = [origin.strip() for origin in allowed_origins_str.split(",") if origin.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # En producción esto se limita al dominio real
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
