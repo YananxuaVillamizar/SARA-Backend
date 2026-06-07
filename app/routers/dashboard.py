@@ -258,6 +258,9 @@ def get_admin_stats(rol: Optional[str] = "todos", semana: Optional[str] = "actua
                                 ord_date = get_date_obj(ord_row.fecha)
                                 if not ord_date:
                                     continue
+                                # Check chronological constraint: extra_date >= ord_date
+                                if extra_date < ord_date:
+                                    continue
                                 abs_diff = abs((extra_date - ord_date).days)
                                 if best_diff is None or abs_diff < best_diff:
                                     best_diff = abs_diff
@@ -625,7 +628,9 @@ def calculate_row_permanence(row):
     hora_entrada = to_datetime(row["hora_entrada"])
     hora_salida = to_datetime(row["hora_salida"])
     
-    # Horas programadas
+    if hora_entrada is None or hora_salida is None:
+        return 0.0
+        
     hora_inicio_dt = combine_date_time(fecha, row["hora_inicio"])
     hora_fin_dt = combine_date_time(fecha, row["hora_fin"])
     
@@ -636,44 +641,62 @@ def calculate_row_permanence(row):
     if duracion_programada_sec <= 0:
         return 0.0
         
+    # Determinar si la clase real traslapa con la programada
     if rol == "Docente":
-        if hora_salida is None:
+        act_start = hora_entrada
+        act_end = hora_salida
+    else:
+        doc_in = to_datetime(row["docente_hora_entrada"])
+        doc_out = to_datetime(row["docente_hora_salida"])
+        if doc_in is None:
             return 0.0
-        duracion_real_sec = (hora_salida - hora_entrada).total_seconds()
-        pct = (duracion_real_sec / duracion_programada_sec) * 100.0
+        act_start = doc_in
+        act_end = doc_out if doc_out is not None else hora_fin_dt
+        
+    overlap_start = max(act_start, hora_inicio_dt)
+    overlap_end = min(act_end, hora_fin_dt)
+    has_overlap = overlap_start < overlap_end
+    
+    if rol == "Docente":
+        if has_overlap:
+            real_start = max(hora_entrada, hora_inicio_dt)
+            real_end = min(hora_salida, hora_fin_dt)
+            duracion_real_sec = max(0.0, (real_end - real_start).total_seconds())
+            pct = (duracion_real_sec / duracion_programada_sec) * 100.0
+        else:
+            duracion_real_sec = (hora_salida - hora_entrada).total_seconds()
+            pct = (duracion_real_sec / duracion_programada_sec) * 100.0
         return min(100.0, max(0.0, pct))
         
     elif rol == "Estudiante":
-        if hora_salida is None:
-            return 0.0
-            
         doc_in = to_datetime(row["docente_hora_entrada"])
         doc_out = to_datetime(row["docente_hora_salida"])
-        
         if doc_in is None:
             return 0.0
             
-        # Calcular D_sesion:
-        if doc_out is None:
-            # Docente no marcó salida: sesión dura hasta la hora de fin estipulada
-            d_sesion_sec = (hora_fin_dt - doc_in).total_seconds()
-            doc_out_effective = hora_fin_dt
+        doc_out_effective = doc_out if doc_out is not None else hora_fin_dt
+        
+        if has_overlap:
+            clamped_doc_in = max(doc_in, hora_inicio_dt)
+            clamped_doc_out = min(doc_out_effective, hora_fin_dt)
+            d_sesion_sec = max(0.0, (clamped_doc_out - clamped_doc_in).total_seconds())
+            
+            clamped_est_in = max(hora_entrada, clamped_doc_in)
+            clamped_est_out = min(hora_salida, clamped_doc_out)
+            d_est_sec = max(0.0, (clamped_est_out - clamped_est_in).total_seconds())
+            
+            if d_sesion_sec <= 0:
+                return 0.0
+            pct = (d_est_sec / d_sesion_sec) * 100.0
         else:
-            d_sesion_sec = (doc_out - doc_in).total_seconds()
-            doc_out_effective = doc_out
+            d_sesion_sec = (doc_out_effective - doc_in).total_seconds()
+            if d_sesion_sec <= 0:
+                return 0.0
+            est_start = max(hora_entrada, doc_in)
+            est_end = min(hora_salida, doc_out_effective)
+            d_est_sec = max(0.0, (est_end - est_start).total_seconds())
+            pct = (d_est_sec / d_sesion_sec) * 100.0
             
-        if d_sesion_sec <= 0:
-            return 0.0
-            
-        # Estudiante inicio efectivo:
-        estudiante_inicio = max(hora_entrada, doc_in)
-        
-        # Estudiante salida efectiva:
-        estudiante_salida = hora_salida
-            
-        d_est_sec = (estudiante_salida - estudiante_inicio).total_seconds()
-        
-        pct = (d_est_sec / d_sesion_sec) * 100.0
         return min(100.0, max(0.0, pct))
         
     return 0.0
