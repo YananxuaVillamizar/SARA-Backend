@@ -1,22 +1,34 @@
-from app.database import get_connection
+import psycopg2
+from psycopg2.extras import RealDictCursor
+import os
+from dotenv import load_dotenv
 
-def run():
-    conn = get_connection()
+load_dotenv()
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+try:
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
     cursor = conn.cursor()
     
-    # Check table structure for semestres
-    cursor.execute("""
-        SELECT column_name, data_type 
-        FROM information_schema.columns 
-        WHERE table_name = 'semestres'
-    """)
-    cols = cursor.fetchall()
-    print("Columns in semestres:")
-    for col in cols:
-        print(f" - {col['column_name']}: {col['data_type']}")
+    print("--- SEMESTRES ---")
+    cursor.execute("SELECT * FROM semestres;")
+    for row in cursor.fetchall():
+        print(row)
         
+    print("\n--- FACULTADES ---")
+    cursor.execute("SELECT COUNT(*) FROM facultades;")
+    print("Count:", cursor.fetchone())
+    
+    print("\n--- PROGRAMAS ---")
+    cursor.execute("SELECT COUNT(*) FROM programas;")
+    print("Count:", cursor.fetchone())
+    
+    print("\n--- ASISTENCIAS ---")
+    cursor.execute("SELECT COUNT(*) FROM asistencias;")
+    print("Count:", cursor.fetchone())
+
     cursor.close()
     conn.close()
-
-if __name__ == '__main__':
-    run()
+except Exception as e:
+    print("Error:", e)

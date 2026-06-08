@@ -58,16 +58,18 @@ def get_admin_stats(rol: Optional[str] = "todos", semana: Optional[str] = "actua
         cursor = conn.cursor()
 
         # 1. Obtener semestre activo
-        cursor.execute("SELECT id, fecha_inicio, fecha_fin FROM semestres WHERE activo = TRUE LIMIT 1")
+        cursor.execute("SELECT id, nombre, fecha_inicio, fecha_fin FROM semestres WHERE activo = TRUE LIMIT 1")
         sem_row = cursor.fetchone()
         if not sem_row:
             # Semestre por defecto si no hay activo
             col_now = datetime.now(timezone(timedelta(hours=-5)))
             fecha_inicio = (col_now - timedelta(weeks=10)).date()
             fecha_fin = (col_now + timedelta(weeks=10)).date()
+            nombre_semestre = "Sin Semestre Activo"
         else:
             fecha_inicio = sem_row["fecha_inicio"]
             fecha_fin = sem_row["fecha_fin"]
+            nombre_semestre = sem_row["nombre"]
 
         # 2. Consultar métricas generales rápidas (activos vs registrados)
         if rol_usuario == "Docente":
@@ -279,7 +281,8 @@ def get_admin_stats(rol: Optional[str] = "todos", semana: Optional[str] = "actua
                 ],
                 "permanencia_tendencia": [],
                 "alertas_desercion": [],
-                "semana_actual": semana_actual
+                "semana_actual": semana_actual,
+                "semestre_actual": nombre_semestre
             }
 
         # 4. Cargar datos en Pandas DataFrame
@@ -521,7 +524,8 @@ def get_admin_stats(rol: Optional[str] = "todos", semana: Optional[str] = "actua
             },
             "asistencia_semanal": semanal_data,
             "alertas_desercion": alertas_desercion,
-            "semana_actual": semana_actual
+            "semana_actual": semana_actual,
+            "semestre_actual": nombre_semestre
         }
 
     except Exception as e:
@@ -548,15 +552,17 @@ def get_estudiante_stats(usuario_id: str):
         
         cursor = conn.cursor()
 
-        cursor.execute("SELECT id, fecha_inicio, fecha_fin FROM semestres WHERE activo = TRUE LIMIT 1")
+        cursor.execute("SELECT id, nombre, fecha_inicio, fecha_fin FROM semestres WHERE activo = TRUE LIMIT 1")
         sem_row = cursor.fetchone()
         if not sem_row:
             col_now = datetime.now(timezone(timedelta(hours=-5)))
             fecha_inicio = (col_now - timedelta(weeks=10)).date()
             fecha_fin = (col_now + timedelta(weeks=10)).date()
+            nombre_semestre = "Sin Semestre Activo"
         else:
             fecha_inicio = sem_row["fecha_inicio"]
             fecha_fin = sem_row["fecha_fin"]
+            nombre_semestre = sem_row["nombre"]
 
         cursor.execute("""
             SELECT 
@@ -621,7 +627,8 @@ def get_estudiante_stats(usuario_id: str):
                     {"name": "Tarde", "value": 0, "color": "#F59E0B"},
                     {"name": "Ausente", "value": 0, "color": "#EF4444"}
                 ],
-                "horarios_hoy": horarios_hoy_list
+                "horarios_hoy": horarios_hoy_list,
+                "semestre_actual": nombre_semestre
             }
 
         df = pd.DataFrame(clases_raw)
@@ -658,7 +665,8 @@ def get_estudiante_stats(usuario_id: str):
             "asistencia_general": asistencia_acumulada_pct,
             "asignaturas_asistencias": asig_list,
             "desglose_puntualidad": desglose_puntualidad,
-            "horarios_hoy": horarios_hoy_list
+            "horarios_hoy": horarios_hoy_list,
+            "semestre_actual": nombre_semestre
         }
 
     except Exception as e:
