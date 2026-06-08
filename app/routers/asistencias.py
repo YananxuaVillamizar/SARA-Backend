@@ -98,9 +98,15 @@ def listar_asistencias(docente_id: Optional[str] = None, usuario_id: Optional[st
         cursor = conn.cursor()
         
         # 1. Obtener semestre activo
-        cursor.execute("SELECT fecha_inicio FROM semestres WHERE activo = TRUE")
+        cursor.execute("SELECT fecha_inicio, fecha_fin FROM semestres WHERE activo = TRUE")
         semestre = cursor.fetchone()
-        fecha_inicio_semestre = dict(semestre)['fecha_inicio'] if semestre else None
+        if semestre:
+            sem_dict = dict(semestre)
+            fecha_inicio_semestre = sem_dict['fecha_inicio']
+            fecha_fin_semestre = sem_dict['fecha_fin']
+        else:
+            fecha_inicio_semestre = "1970-01-01"
+            fecha_fin_semestre = "2099-12-31"
         
         # 2. Consulta principal (uniones para obtener todos los datos necesarios)
         query = """
@@ -144,12 +150,12 @@ def listar_asistencias(docente_id: Optional[str] = None, usuario_id: Optional[st
             JOIN usuarios u ON u.id = m.usuario_id
             JOIN programas prog ON prog.id = asig.programa_id
             JOIN facultades fac ON fac.id = asig.facultad_id
-            LEFT JOIN sesiones_clase s ON s.horario_id = h.id
+            LEFT JOIN sesiones_clase s ON s.horario_id = h.id AND s.fecha >= %s AND s.fecha <= %s
             LEFT JOIN asistencias a ON a.usuario_id = u.id AND a.sesion_id = s.id
             JOIN roles r ON r.id = u.rol_id
             WHERE r.nombre = 'Estudiante'
         """
-        params = []
+        params = [fecha_inicio_semestre, fecha_fin_semestre]
         
         if docente_id:
             query += " AND h.docente_id = %s"
