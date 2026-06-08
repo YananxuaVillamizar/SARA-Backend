@@ -3,8 +3,9 @@ from app.database import get_connection
 from app.reconciliation import conciliar_sesiones_pasadas
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+
 
 router = APIRouter()
 
@@ -61,8 +62,9 @@ def get_admin_stats(rol: Optional[str] = "todos", semana: Optional[str] = "actua
         sem_row = cursor.fetchone()
         if not sem_row:
             # Semestre por defecto si no hay activo
-            fecha_inicio = (datetime.now() - timedelta(weeks=10)).date()
-            fecha_fin = (datetime.now() + timedelta(weeks=10)).date()
+            col_now = datetime.now(timezone(timedelta(hours=-5)))
+            fecha_inicio = (col_now - timedelta(weeks=10)).date()
+            fecha_fin = (col_now + timedelta(weeks=10)).date()
         else:
             fecha_inicio = sem_row["fecha_inicio"]
             fecha_fin = sem_row["fecha_fin"]
@@ -256,7 +258,7 @@ def get_admin_stats(rol: Optional[str] = "todos", semana: Optional[str] = "actua
         cursor.execute(query_asistencias, params)
         asistencias_raw = cursor.fetchall()
         
-        semana_actual = get_semana_semestre(datetime.now().date(), fecha_inicio)
+        semana_actual = get_semana_semestre(datetime.now(timezone(timedelta(hours=-5))).date(), fecha_inicio)
         
         if not asistencias_raw:
             return {
@@ -548,8 +550,13 @@ def get_estudiante_stats(usuario_id: str):
 
         cursor.execute("SELECT id, fecha_inicio, fecha_fin FROM semestres WHERE activo = TRUE LIMIT 1")
         sem_row = cursor.fetchone()
-        fecha_inicio = sem_row["fecha_inicio"] if sem_row else (datetime.now() - timedelta(weeks=10)).date()
-        fecha_fin = sem_row["fecha_fin"] if sem_row else (datetime.now() + timedelta(weeks=10)).date()
+        if not sem_row:
+            col_now = datetime.now(timezone(timedelta(hours=-5)))
+            fecha_inicio = (col_now - timedelta(weeks=10)).date()
+            fecha_fin = (col_now + timedelta(weeks=10)).date()
+        else:
+            fecha_inicio = sem_row["fecha_inicio"]
+            fecha_fin = sem_row["fecha_fin"]
 
         cursor.execute("""
             SELECT 
@@ -568,7 +575,7 @@ def get_estudiante_stats(usuario_id: str):
 
         clases_raw = cursor.fetchall()
 
-        now = datetime.now()
+        now = datetime.now(timezone(timedelta(hours=-5)))
         dias_es_map = {0: "lunes", 1: "martes", 2: "miercoles", 3: "jueves", 4: "viernes", 5: "sabado", 6: "domingo"}
         dia_hoy = dias_es_map[now.weekday()]
 
@@ -940,8 +947,9 @@ def get_permanencia_stats(
         cursor.execute("SELECT fecha_inicio, fecha_fin FROM semestres WHERE activo = TRUE LIMIT 1")
         sem_row = cursor.fetchone()
         if not sem_row:
-            fecha_inicio = (datetime.now() - timedelta(weeks=10)).date()
-            fecha_fin = (datetime.now() + timedelta(weeks=10)).date()
+            col_now = datetime.now(timezone(timedelta(hours=-5)))
+            fecha_inicio = (col_now - timedelta(weeks=10)).date()
+            fecha_fin = (col_now + timedelta(weeks=10)).date()
         else:
             fecha_inicio = sem_row["fecha_inicio"]
             fecha_fin = sem_row["fecha_fin"]
@@ -997,7 +1005,7 @@ def get_permanencia_stats(
         result = cursor.fetchall()
         
         # 3. Agrupar por semana
-        semana_actual = get_semana_semestre(datetime.now().date(), fecha_inicio)
+        semana_actual = get_semana_semestre(datetime.now(timezone(timedelta(hours=-5))).date(), fecha_inicio)
         limit_semana = max(16, semana_actual)
         
         stats_por_semana = {w: [] for w in range(1, limit_semana + 1)}

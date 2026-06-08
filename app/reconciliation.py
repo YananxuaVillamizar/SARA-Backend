@@ -1,4 +1,4 @@
-from datetime import datetime, date, time, timedelta
+from datetime import datetime, date, time, timedelta, timezone
 from typing import Any
 
 DIAS_MAP = {
@@ -38,7 +38,7 @@ def conciliar_sesiones_pasadas(conn):
         if isinstance(fecha_fin, str):
             fecha_fin = datetime.strptime(fecha_fin[:10], "%Y-%m-%d").date()
             
-        today = date.today()
+        today = datetime.now(timezone(timedelta(hours=-5))).date()
         limite_fecha = min(fecha_fin, today)
         
         # 2. Obtener todos los horarios
@@ -70,7 +70,7 @@ def conciliar_sesiones_pasadas(conn):
             semanas_reconciliadas.add((h_id, lunes_semana))
             
         # 4. Generar fechas para cada horario y comparar (Conciliación de sesiones del pasado)
-        now = datetime.now()
+        now = datetime.now(timezone(timedelta(hours=-5)))
         current_time = now.time()
         
         sesiones_a_crear = []

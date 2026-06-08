@@ -47,6 +47,7 @@ class SemestreCrear(BaseModel):
     fecha_inicio: str
     fecha_fin: str
     activo: bool = False
+    estado: Optional[str] = "pendiente"
 
 # ══════════════════════════════════════════════
 # FACULTADES
@@ -486,31 +487,8 @@ def listar_semestres():
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, nombre, fecha_inicio, fecha_fin, activo FROM semestres ORDER BY fecha_inicio DESC")
+        cursor.execute("SELECT id, nombre, fecha_inicio, fecha_fin, activo, estado FROM semestres ORDER BY fecha_inicio DESC")
         result = cursor.fetchall()
-        # Convertir tuplas a diccionarios para consistencia si es necesario,
-        # pero fetchall() suele devolver tuplas a menos que se use DictCursor.
-        # Si el frontend espera objetos, debemos convertirlos!
-        # Vamos a ver si otros endpoints convierten a dict.
-        # En admin.py line 50: cursor.fetchall() suele devolver tuplas si no se configura DictCursor.
-        # Pero el frontend suele esperar objetos!
-        # Vamos a ver si el frontend maneja tuplas o objetos.
-        # En config/page.tsx line 78: const [facultades, setFacultades] = useState<Facultad[]>([]);
-        # Y Facultad interface has id, nombre, codigo. So it expects objects!
-        # So we should return objects or tuples?
-        # If the cursor returns tuples, FastAPI will serialize them as lists of lists!
-        # Let's check if the connection uses DictCursor.
-        # In asistencias.py line 152: cursor.fetchone()['id'] failed because it was a tuple!
-        # So it returns TUPLES!
-        # But wait, if it returns tuples, how does the frontend work?
-        # Maybe the frontend maps them?
-        # Let's check config/page.tsx line 1030: `g.estudiante` (object property).
-        # So the backend MUST return objects or the frontend maps them!
-        # Let's check if `asistencias.py` returns objects or tuples.
-        # In `asistencias.py` I saw `cursor.fetchone()['id']` which failed because it was a tuple!
-        # So the backend returns tuples!
-        # Let's check if we should return objects for semestres to be safe!
-        # Let's return list of dicts! It's safer for JSON.
         
         return result
     finally:
@@ -523,13 +501,17 @@ def crear_semestre(datos: SemestreCrear):
         conn = get_connection()
         cursor = conn.cursor()
         
-        if datos.activo:
+        estado_val = datos.estado or "pendiente"
+        activo_val = (estado_val == "actual")
+        
+        if activo_val:
+            cursor.execute("UPDATE semestres SET activo = FALSE, estado = 'terminado' WHERE estado = 'actual'")
             cursor.execute("UPDATE semestres SET activo = FALSE")
             
         cursor.execute("""
-            INSERT INTO semestres (nombre, fecha_inicio, fecha_fin, activo)
-            VALUES (%s, %s, %s, %s) RETURNING id
-        """, (datos.nombre, datos.fecha_inicio, datos.fecha_fin, datos.activo))
+            INSERT INTO semestres (nombre, fecha_inicio, fecha_fin, activo, estado)
+            VALUES (%s, %s, %s, %s, %s) RETURNING id
+        """, (datos.nombre, datos.fecha_inicio, datos.fecha_fin, activo_val, estado_val))
         conn.commit()
         res = cursor.fetchone()
         res_dict = dict(res) if res else {}
@@ -547,13 +529,17 @@ def actualizar_semestre(semestre_id: str, datos: SemestreCrear):
         conn = get_connection()
         cursor = conn.cursor()
         
-        if datos.activo:
+        estado_val = datos.estado or "pendiente"
+        activo_val = (estado_val == "actual")
+        
+        if activo_val:
+            cursor.execute("UPDATE semestres SET activo = FALSE, estado = 'terminado' WHERE estado = 'actual' AND id != %s", (semestre_id,))
             cursor.execute("UPDATE semestres SET activo = FALSE WHERE id != %s", (semestre_id,))
             
         cursor.execute("""
-            UPDATE semestres SET nombre = %s, fecha_inicio = %s, fecha_fin = %s, activo = %s
+            UPDATE semestres SET nombre = %s, fecha_inicio = %s, fecha_fin = %s, activo = %s, estado = %s
             WHERE id = %s RETURNING id
-        """, (datos.nombre, datos.fecha_inicio, datos.fecha_fin, datos.activo, semestre_id))
+        """, (datos.nombre, datos.fecha_inicio, datos.fecha_fin, activo_val, estado_val, semestre_id))
         conn.commit()
         if not cursor.fetchone():
             raise HTTPException(status_code=404, detail="Semestre no encontrado")
