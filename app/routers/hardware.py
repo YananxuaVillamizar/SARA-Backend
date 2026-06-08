@@ -1458,5 +1458,76 @@ def obtener_usuario_docente_por_sesion(request: dict):
         if conn:
             conn.close()
 
+# ══════════════════════════════════════════════
+# ENDPOINTS PARA SINCRONIZACIÓN DE BIOMETRÍA OFFLINE
+# ══════════════════════════════════════════════
+
+class SyncConfirmRequest(BaseModel):
+    comando_id: int
+    success: bool
+
+@router.get("/sync")
+def get_pending_biometric_commands(mac_address: Optional[str] = None):
+    """
+    Retorna los comandos biométricos pendientes (ej. eliminar huella de un usuario revocado)
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, usuario_id, huella_id, comando, estado
+            FROM biometric_pending_commands
+            WHERE estado = 'PENDING'
+            ORDER BY fecha_creacion ASC
+        """)
+        commands = cursor.fetchall()
+        
+        res = []
+        for cmd in commands:
+            res.append({
+                "id": cmd["id"],
+                "usuario_id": cmd["usuario_id"],
+                "huella_id": cmd["huella_id"],
+                "comando": cmd["comando"]
+            })
+        return res
+    except Exception as e:
+        print(f"[ERROR] en get_pending_biometric_commands: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            conn.close()
+
+@router.post("/sync/confirm")
+def confirm_biometric_command(request: SyncConfirmRequest):
+    """
+    Confirma si la ejecución del comando en el ESP32 fue exitosa
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        nuevo_estado = 'COMPLETED' if request.success else 'FAILED'
+        
+        cursor.execute("""
+            UPDATE biometric_pending_commands
+            SET estado = %s, fecha_ejecucion = NOW()
+            WHERE id = %s
+        """, (nuevo_estado, request.comando_id))
+        
+        conn.commit()
+        return {"exito": True, "mensaje": f"Comando actualizado a {nuevo_estado}"}
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"[ERROR] en confirm_biometric_command: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            conn.close()
+
 
 

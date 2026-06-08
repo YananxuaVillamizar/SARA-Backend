@@ -232,6 +232,25 @@ def crear_horario(horario: HorarioCrear):
     try:
         conn = get_connection()
         cursor = conn.cursor()
+
+        # Validar cruce de horario para el docente
+        cursor.execute("""
+            SELECT h.dia_semana, h.hora_inicio, h.hora_fin, asig.nombre as asignatura, h.grupo
+            FROM horarios h
+            JOIN asignaturas asig ON asig.id = h.asignatura_id
+            WHERE h.docente_id = %s 
+              AND LOWER(h.dia_semana) = LOWER(%s)
+              AND (%s::TIME < h.hora_fin)
+              AND (h.hora_inicio < %s::TIME)
+            LIMIT 1
+        """, (horario.docente_id, horario.dia_semana, horario.hora_inicio, horario.hora_fin))
+        conflict = cursor.fetchone()
+        if conflict:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"El docente ya tiene la asignación para el día {conflict['dia_semana']} de {str(conflict['hora_inicio'])[:5]} a {str(conflict['hora_fin'])[:5]} en la asignatura {conflict['asignatura']} Grupo {conflict['grupo']}."
+            )
+
         cursor.execute("""
             INSERT INTO horarios 
                 (asignatura_id, docente_id, dia_semana, hora_inicio, hora_fin, aula, grupo, cupo_maximo)
@@ -242,6 +261,7 @@ def crear_horario(horario: HorarioCrear):
         conn.commit()
         conciliar_sesiones_pasadas(conn)
         return {"mensaje": "Horario creado", "horario": cursor.fetchone()}
+    except HTTPException: raise
     except Exception as e:
         if conn: conn.rollback()
         raise HTTPException(status_code=400, detail=str(e))
@@ -436,11 +456,72 @@ def actualizar_asignatura(asignatura_id: str, datos: AsignaturaCrear):
 
 # ── Actualizar Horario ────────────────────────────────────────
 @router.put("/horarios/{horario_id}")
-def actualizar_horario(horario_id: str, datos: HorarioCrear):
+def actualizar_horario(horario_id: str, datos: HorarioCrear, force: Optional[bool] = False):
     conn = None
     try:
         conn = get_connection()
         cursor = conn.cursor()
+
+        # 1. Validar cruce de horario para el docente (excluyendo el horario actual)
+        cursor.execute("""
+            SELECT h.dia_semana, h.hora_inicio, h.hora_fin, asig.nombre as asignatura, h.grupo
+            FROM horarios h
+            JOIN asignaturas asig ON asig.id = h.asignatura_id
+            WHERE h.docente_id = %s 
+              AND LOWER(h.dia_semana) = LOWER(%s)
+              AND (%s::TIME < h.hora_fin)
+              AND (h.hora_inicio < %s::TIME)
+              AND h.id != %s
+            LIMIT 1
+        """, (datos.docente_id, datos.dia_semana, datos.hora_inicio, datos.hora_fin, horario_id))
+        conflict = cursor.fetchone()
+        if conflict:
+            raise HTTPException(
+                status_code=400,
+                detail=f"El docente ya tiene la asignación para el día {conflict['dia_semana']} de {str(conflict['hora_inicio'])[:5]} a {str(conflict['hora_fin'])[:5]} en la asignatura {conflict['asignatura']} Grupo {conflict['grupo']}."
+            )
+
+        # 2. Obtener asignatura_id y grupo actuales para detectar estudiantes afectados
+        cursor.execute("SELECT asignatura_id, grupo FROM horarios WHERE id = %s", (horario_id,))
+        h_info = cursor.fetchone()
+        if not h_info:
+            raise HTTPException(status_code=404, detail="Horario no encontrado")
+
+        # 3. Buscar estudiantes matriculados en este grupo que tendrían conflicto con el nuevo horario
+        cursor.execute("""
+            SELECT DISTINCT u.id, u.nombres, u.apellidos, u.num_doc
+            FROM matriculas m
+            JOIN usuarios u ON u.id = m.usuario_id
+            JOIN matriculas m_other ON m_other.usuario_id = m.usuario_id
+            JOIN horarios h_other ON h_other.asignatura_id = m_other.asignatura_id AND h_other.grupo = m_other.grupo
+            WHERE m.asignatura_id = %s AND m.grupo = %s
+              AND (m_other.asignatura_id != m.asignatura_id OR m_other.grupo != m.grupo)
+              AND LOWER(h_other.dia_semana) = LOWER(%s)
+              AND (%s::TIME < h_other.hora_fin)
+              AND (h_other.hora_inicio < %s::TIME)
+              AND h_other.id != %s
+        """, (h_info["asignatura_id"], h_info["grupo"], datos.dia_semana, datos.hora_inicio, datos.hora_fin, horario_id))
+        conflicting_students = cursor.fetchall()
+
+        if conflicting_students:
+            if not force:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "tipo": "cruce_estudiantes",
+                        "estudiantes": [
+                            {"id": str(s["id"]), "nombre": f"{s['nombres']} {s['apellidos']}", "num_doc": s["num_doc"]}
+                            for s in conflicting_students
+                        ]
+                    }
+                )
+            else:
+                # Si force=True, eliminar las matrículas de los estudiantes afectados
+                for student in conflicting_students:
+                    cursor.execute("""
+                        DELETE FROM matriculas 
+                        WHERE usuario_id = %s AND asignatura_id = %s AND grupo = %s
+                    """, (student["id"], h_info["asignatura_id"], h_info["grupo"]))
 
         # Actualizar el horario
         cursor.execute("""

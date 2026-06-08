@@ -261,6 +261,18 @@ def actualizar_usuario(num_doc: str, datos: UsuarioActualizar):
             valores.append(datos.autoriza_biometria)
             # Si se revoca la autorización, se elimina la huella automáticamente por privacidad de datos
             if datos.autoriza_biometria is False:
+                # Obtener el sensor_id/huella_id antes de eliminar el registro
+                cursor.execute("""
+                    SELECT sensor_id FROM templates_biometricos 
+                    WHERE usuario_id = (SELECT id FROM usuarios WHERE num_doc = %s)
+                """, (num_doc,))
+                temp_row = cursor.fetchone()
+                if temp_row and temp_row["sensor_id"] is not None:
+                    cursor.execute("""
+                        INSERT INTO biometric_pending_commands (usuario_id, huella_id, comando, estado)
+                        VALUES ((SELECT id FROM usuarios WHERE num_doc = %s), %s, 'DELETE', 'PENDING')
+                    """, (num_doc, temp_row["sensor_id"]))
+                
                 cursor.execute("""
                     DELETE FROM templates_biometricos 
                     WHERE usuario_id = (SELECT id FROM usuarios WHERE num_doc = %s)

@@ -77,6 +77,32 @@ def matriculas_estudiante(num_doc: str):
     finally:
         if conn: conn.close()
 
+def check_schedule_conflict(cursor, usuario_id: str, asignatura_id: str, grupo: str, exclude_matricula_id: Optional[str] = None):
+    query = """
+        SELECT 
+            asig1.nombre as asignatura_conflicto,
+            asig2.nombre as asignatura_nueva
+        FROM matriculas m
+        JOIN horarios h1 ON h1.asignatura_id = m.asignatura_id AND h1.grupo = m.grupo
+        JOIN asignaturas asig1 ON asig1.id = h1.asignatura_id
+        JOIN horarios h2 ON h2.asignatura_id = %s AND h2.grupo = %s
+        JOIN asignaturas asig2 ON asig2.id = h2.asignatura_id
+        WHERE m.usuario_id = %s
+          AND LOWER(h1.dia_semana) = LOWER(h2.dia_semana)
+          AND (h2.hora_inicio < h1.hora_fin)
+          AND (h1.hora_inicio < h2.hora_fin)
+    """
+    params = [asignatura_id, grupo, usuario_id]
+    if exclude_matricula_id:
+        query += " AND m.id != %s"
+        params.append(exclude_matricula_id)
+        
+    cursor.execute(query, params)
+    row = cursor.fetchone()
+    if row:
+        return f"Hay cruce de horarios para las asignaturas {row['asignatura_conflicto']} y {row['asignatura_nueva']}."
+    return None
+
 # ── Crear matrícula ──────────────────────────────────────────
 @router.post("/", status_code=201)
 def crear_matricula(datos: MatriculaCrear):
@@ -84,6 +110,12 @@ def crear_matricula(datos: MatriculaCrear):
     try:
         conn = get_connection()
         cursor = conn.cursor()
+
+        # Validar cruce de horario
+        conflict = check_schedule_conflict(cursor, datos.usuario_id, datos.asignatura_id, datos.grupo)
+        if conflict:
+            raise HTTPException(status_code=400, detail=conflict)
+
         # 1. Verificar cupo disponible
         cursor.execute("""
             SELECT 
@@ -118,6 +150,7 @@ def crear_matricula(datos: MatriculaCrear):
         conn.commit()
         nueva = cursor.fetchone()
         return {"mensaje": "Matrícula creada", "matricula": nueva}
+    except HTTPException: raise
     except Exception as e:
         if conn: conn.rollback()
         raise HTTPException(status_code=400, detail=str(e))
@@ -131,6 +164,22 @@ def actualizar_matricula(matricula_id: str, datos: MatriculaActualizar):
     try:
         conn = get_connection()
         cursor = conn.cursor()
+
+        # Si cambia de grupo, validar conflicto de horario
+        if datos.grupo is not None:
+            cursor.execute("SELECT usuario_id, asignatura_id FROM matriculas WHERE id = %s", (matricula_id,))
+            m_row = cursor.fetchone()
+            if m_row:
+                conflict = check_schedule_conflict(
+                    cursor,
+                    str(m_row["usuario_id"]),
+                    str(m_row["asignatura_id"]),
+                    datos.grupo,
+                    exclude_matricula_id=matricula_id
+                )
+                if conflict:
+                    raise HTTPException(status_code=400, detail=conflict)
+
         campos, valores = [], []
         if datos.estado is not None:
             campos.append("estado = %s"); valores.append(datos.estado)

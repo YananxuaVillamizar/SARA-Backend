@@ -24,7 +24,8 @@ def run_migrations():
 
         # 2. Sincronizar el campo 'estado' con el campo 'activo' para semestres existentes
         cursor.execute("SELECT COUNT(*) FROM semestres WHERE estado = 'actual';")
-        count_actual = cursor.fetchone()[0]
+        row = cursor.fetchone()
+        count_actual = list(row.values())[0] if isinstance(row, dict) else row[0]
         if count_actual == 0:
             logger.info("Migración: Sincronizando estado 'actual' con activo = TRUE...")
             cursor.execute("UPDATE semestres SET estado = 'actual' WHERE activo = TRUE;")
@@ -76,6 +77,22 @@ def run_migrations():
             CREATE UNIQUE INDEX IF NOT EXISTS sesiones_clase_horario_fecha_unique_idx 
             ON sesiones_clase (horario_id, fecha) 
             WHERE estado IN ('abierta', 'completa');
+        """)
+        conn.commit()
+
+        # 8. Crear tabla biometric_pending_commands si no existe
+        logger.info("Migración: Verificando tabla 'biometric_pending_commands'...")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS biometric_pending_commands (
+                id SERIAL PRIMARY KEY,
+                usuario_id UUID NOT NULL,
+                huella_id INTEGER NOT NULL,
+                comando VARCHAR(50) NOT NULL,
+                estado VARCHAR(20) DEFAULT 'PENDING',
+                fecha_creacion TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                fecha_ejecucion TIMESTAMP WITH TIME ZONE,
+                CONSTRAINT fk_usuario_biometric FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
+            );
         """)
         conn.commit()
 

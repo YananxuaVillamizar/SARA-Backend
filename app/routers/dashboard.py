@@ -170,7 +170,8 @@ def get_admin_stats(rol: Optional[str] = "todos", semana: Optional[str] = "actua
                 SELECT 
                     s.horario_id,
                     s.docente_asistio,
-                    s.tipo
+                    s.tipo,
+                    (SELECT a2.estado FROM asistencias a2 WHERE a2.usuario_id = h.docente_id AND a2.sesion_id = s.id LIMIT 1) AS docente_estado_asistencia
                 FROM sesiones_clase s
                 JOIN horarios h ON h.id = s.horario_id
                 WHERE s.fecha >= %s AND s.fecha <= %s
@@ -181,8 +182,10 @@ def get_admin_stats(rol: Optional[str] = "todos", semana: Optional[str] = "actua
                 SELECT 
                     s.horario_id,
                     s.docente_asistio,
-                    s.tipo
+                    s.tipo,
+                    (SELECT a2.estado FROM asistencias a2 WHERE a2.usuario_id = h.docente_id AND a2.sesion_id = s.id LIMIT 1) AS docente_estado_asistencia
                 FROM sesiones_clase s
+                JOIN horarios h ON h.id = s.horario_id
                 WHERE s.fecha >= %s AND s.fecha <= %s
             """, (fecha_inicio, fecha_fin))
         
@@ -199,9 +202,18 @@ def get_admin_stats(rol: Optional[str] = "todos", semana: Optional[str] = "actua
                 regulares = group[group["tipo"] == "ordinaria"]
                 extraordinarias = group[group["tipo"] == "extraordinaria"]
                 
-                n_dictadas = len(regulares[regulares["docente_asistio"] == True])
-                n_inasistencias = len(regulares[regulares["docente_asistio"] == False])
-                n_extra = len(extraordinarias[extraordinarias["docente_asistio"] == True])
+                n_dictadas = len(regulares[
+                    (regulares["docente_asistio"] == True) & 
+                    (regulares["docente_estado_asistencia"].fillna("").str.lower() != "inasistencia")
+                ])
+                n_inasistencias = len(regulares[
+                    (regulares["docente_asistio"] == False) | 
+                    (regulares["docente_estado_asistencia"].fillna("").str.lower() == "inasistencia")
+                ])
+                n_extra = len(extraordinarias[
+                    (extraordinarias["docente_asistio"] == True) & 
+                    (extraordinarias["docente_estado_asistencia"].fillna("").str.lower() != "inasistencia")
+                ])
                 
                 n_compensadas = min(n_inasistencias, n_extra)
                 n_regulares_totales = len(regulares)
@@ -761,7 +773,11 @@ def calculate_row_permanence(row):
         if doc_in is None:
             return 0.0
         act_start = doc_in
-        act_end = doc_out if doc_out is not None else hora_fin_dt
+        if doc_out is not None:
+            act_end = doc_out
+        else:
+            max_est_out = to_datetime(row.get("max_estudiante_hora_salida"))
+            act_end = max_est_out if max_est_out is not None else hora_fin_dt
         
     overlap_start = max(act_start, hora_inicio_dt)
     overlap_end = min(act_end, hora_fin_dt)
@@ -784,7 +800,11 @@ def calculate_row_permanence(row):
         if doc_in is None:
             return 0.0
             
-        doc_out_effective = doc_out if doc_out is not None else hora_fin_dt
+        if doc_out is not None:
+            doc_out_effective = doc_out
+        else:
+            max_est_out = to_datetime(row.get("max_estudiante_hora_salida"))
+            doc_out_effective = max_est_out if max_est_out is not None else hora_fin_dt
         
         if has_overlap:
             clamped_doc_in = max(doc_in, hora_inicio_dt)
@@ -980,7 +1000,8 @@ def get_permanencia_stats(
                 u.apellidos,
                 r.nombre as rol,
                 (SELECT a2.hora_entrada FROM asistencias a2 WHERE a2.usuario_id = h.docente_id AND a2.sesion_id = s.id LIMIT 1) AS docente_hora_entrada,
-                (SELECT a2.hora_salida FROM asistencias a2 WHERE a2.usuario_id = h.docente_id AND a2.sesion_id = s.id LIMIT 1) AS docente_hora_salida
+                (SELECT a2.hora_salida FROM asistencias a2 WHERE a2.usuario_id = h.docente_id AND a2.sesion_id = s.id LIMIT 1) AS docente_hora_salida,
+                (SELECT MAX(a3.hora_salida) FROM asistencias a3 JOIN usuarios u3 ON u3.id = a3.usuario_id JOIN roles r3 ON r3.id = u3.rol_id WHERE a3.sesion_id = s.id AND r3.nombre = 'Estudiante') AS max_estudiante_hora_salida
             FROM asistencias a
             JOIN usuarios u ON u.id = a.usuario_id
             JOIN roles r ON r.id = u.rol_id
@@ -1050,6 +1071,193 @@ def get_permanencia_stats(
             
         return permanencia_stats
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            conn.close()
+
+@router.get("/alertas/{usuario_id}")
+def obtener_alertas_usuario(usuario_id: str):
+    """
+    Retorna una lista de alertas y notificaciones personalizadas para el usuario según su rol.
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # 1. Obtener el rol del usuario
+        cursor.execute("""
+            SELECT u.id, u.nombres, u.apellidos, r.nombre as rol
+            FROM usuarios u
+            JOIN roles r ON r.id = u.rol_id
+            WHERE u.id = %s
+        """, (usuario_id,))
+        user = cursor.fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+            
+        rol = user["rol"]
+        alertas = []
+        
+        # 2. Obtener semestre activo para fecha de referencia
+        cursor.execute("SELECT fecha_inicio, fecha_fin FROM semestres WHERE activo = TRUE LIMIT 1")
+        sem_row = cursor.fetchone()
+        if not sem_row:
+            col_now = datetime.now(timezone(timedelta(hours=-5)))
+            fecha_inicio = (col_now - timedelta(weeks=10)).date()
+            fecha_fin = (col_now + timedelta(weeks=10)).date()
+        else:
+            fecha_inicio = sem_row["fecha_inicio"]
+            fecha_fin = sem_row["fecha_fin"]
+            
+        if rol == "Administrativo":
+            # A) Estudiantes en riesgo de deserción
+            cursor.execute("""
+                SELECT 
+                    a.usuario_id,
+                    u.nombres,
+                    u.apellidos,
+                    u.num_doc,
+                    a.estado,
+                    asig.nombre AS asignatura
+                FROM asistencias a
+                JOIN usuarios u ON u.id = a.usuario_id
+                JOIN roles r ON r.id = u.rol_id
+                JOIN horarios h ON h.id = a.horario_id
+                JOIN asignaturas asig ON asig.id = h.asignatura_id
+                JOIN sesiones_clase s ON s.id = a.sesion_id
+                WHERE s.fecha >= %s AND s.fecha <= %s AND r.nombre = 'Estudiante' AND s.docente_asistio = TRUE
+            """, (fecha_inicio, fecha_fin))
+            asistencias_raw = cursor.fetchall()
+            
+            if asistencias_raw:
+                df = pd.DataFrame(asistencias_raw)
+                df["estado_norm"] = df["estado"].apply(normalize_estado)
+                
+                for (uid, num_doc, nombres, apellidos), df_est in df.groupby(["usuario_id", "num_doc", "nombres", "apellidos"]):
+                    fallas_materias = []
+                    for asignatura, df_est_asig in df_est.groupby("asignatura"):
+                        df_est_asig_sorted = df_est_asig.copy()
+                        pct_asig = (len(df_est_asig_sorted[df_est_asig_sorted["estado_norm"].isin(["Presente", "Tarde"])]) / len(df_est_asig_sorted)) * 100
+                        if pct_asig < 70 and len(df_est_asig_sorted) >= 3:
+                            fallas_materias.append(asignatura)
+                    
+                    if fallas_materias:
+                        materias_str = ", ".join(fallas_materias)
+                        alertas.append({
+                            "tipo": "critical",
+                            "titulo": "Riesgo de deserción",
+                            "descripcion": f"El estudiante {nombres} {apellidos} ({num_doc}) tiene asistencia inferior al 70% en: {materias_str}."
+                        })
+                        
+            # B) Hardware desconectado / comandos pendientes (offline sync check)
+            cursor.execute("""
+                SELECT COUNT(*) as count 
+                FROM biometric_pending_commands 
+                WHERE estado = 'PENDING' AND fecha_creacion < NOW() - INTERVAL '5 minutes'
+            """)
+            pending = cursor.fetchone()
+            if pending and pending["count"] > 0:
+                alertas.append({
+                    "tipo": "warning",
+                    "titulo": "Sincronización biométrica retrasada",
+                    "descripcion": f"Hay {pending['count']} comandos biométricos pendientes por sincronizar en el hardware (ESP32 posiblemente offline)."
+                })
+                
+        elif rol == "Docente":
+            # A) Clases pendientes de registrar (sesiones 'abierta')
+            cursor.execute("""
+                SELECT s.id, h.grupo, asig.nombre as asignatura, h.hora_inicio
+                FROM sesiones_clase s
+                JOIN horarios h ON h.id = s.horario_id
+                JOIN asignaturas asig ON asig.id = h.asignatura_id
+                WHERE h.docente_id = %s AND s.estado = 'abierta'
+            """, (usuario_id,))
+            open_sessions = cursor.fetchall()
+            for sess in open_sessions:
+                alertas.append({
+                    "tipo": "warning",
+                    "titulo": "Asistencia pendiente",
+                    "descripcion": f"Tienes la clase de {sess['asignatura']} Grupo {sess['grupo']} ({str(sess['hora_inicio'])[:5]}) pendiente por registrar asistencia hoy."
+                })
+                
+            # B) Grupos con baja asistencia (< 70%)
+            cursor.execute("""
+                SELECT 
+                    a.estado,
+                    h.grupo,
+                    asig.nombre AS asignatura
+                FROM asistencias a
+                JOIN usuarios u ON u.id = a.usuario_id
+                JOIN roles r ON r.id = u.rol_id
+                JOIN horarios h ON h.id = a.horario_id
+                JOIN asignaturas asig ON asig.id = h.asignatura_id
+                JOIN sesiones_clase s ON s.id = a.sesion_id
+                WHERE s.fecha >= %s AND s.fecha <= %s AND r.nombre = 'Estudiante' AND h.docente_id = %s AND s.docente_asistio = TRUE
+            """, (fecha_inicio, fecha_fin, usuario_id))
+            asistencias_raw = cursor.fetchall()
+            if asistencias_raw:
+                df = pd.DataFrame(asistencias_raw)
+                df["estado_norm"] = df["estado"].apply(normalize_estado)
+                for (asignatura, grupo), df_grp in df.groupby(["asignatura", "grupo"]):
+                    total_rec = len(df_grp)
+                    present_rec = len(df_grp[df_grp["estado_norm"].isin(["Presente", "Tarde"])])
+                    pct = (present_rec / total_rec) * 100 if total_rec > 0 else 0
+                    if pct < 70 and total_rec >= 5:
+                        alertas.append({
+                            "tipo": "info",
+                            "titulo": "Baja asistencia en grupo",
+                            "descripcion": f"El grupo {grupo} de {asignatura} registra una asistencia promedio baja del {round(pct)}%."
+                        })
+                        
+        elif rol == "Estudiante":
+            # A) Alertas de asistencia < 80%
+            cursor.execute("""
+                SELECT 
+                    a.estado,
+                    asig.nombre AS asignatura
+                FROM asistencias a
+                JOIN horarios h ON h.id = a.horario_id
+                JOIN asignaturas asig ON asig.id = h.asignatura_id
+                JOIN sesiones_clase s ON s.id = a.sesion_id
+                WHERE a.usuario_id = %s AND s.fecha >= %s AND s.fecha <= %s AND s.docente_asistio = TRUE
+            """, (usuario_id, fecha_inicio, fecha_fin))
+            asistencias_raw = cursor.fetchall()
+            if asistencias_raw:
+                df = pd.DataFrame(asistencias_raw)
+                df["estado_norm"] = df["estado"].apply(normalize_estado)
+                for asignatura, df_asig in df.groupby("asignatura"):
+                    total_rec = len(df_asig)
+                    present_rec = len(df_asig[df_asig["estado_norm"].isin(["Presente", "Tarde"])])
+                    pct = (present_rec / total_rec) * 100 if total_rec > 0 else 0
+                    if pct < 80 and total_rec >= 3:
+                        alertas.append({
+                            "tipo": "critical",
+                            "titulo": "Baja asistencia acumulada",
+                            "descripcion": f"Tu asistencia en {asignatura} es de {round(pct)}%. Recuerda que requieres mínimo 80% para aprobar."
+                        })
+                        
+            # B) Clases canceladas / docente inasistió hoy
+            cursor.execute("""
+                SELECT asig.nombre as asignatura, h.grupo, h.hora_inicio
+                FROM sesiones_clase s
+                JOIN horarios h ON h.id = s.horario_id
+                JOIN asignaturas asig ON asig.id = h.asignatura_id
+                JOIN matriculas m ON m.asignatura_id = h.asignatura_id AND m.grupo = h.grupo
+                WHERE m.usuario_id = %s AND s.fecha = CURRENT_DATE AND s.estado = 'no_completada'
+            """, (usuario_id,))
+            cancelled = cursor.fetchall()
+            for c in cancelled:
+                alertas.append({
+                    "tipo": "info",
+                    "titulo": "Clase cancelada hoy",
+                    "descripcion": f"La clase de {c['asignatura']} Grupo {c['grupo']} ({str(c['hora_inicio'])[:5]}) no fue dictada hoy debido a inasistencia docente."
+                })
+                
+        return alertas
+    except Exception as e:
+        print(f"[ERROR] en obtener_alertas_usuario: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:

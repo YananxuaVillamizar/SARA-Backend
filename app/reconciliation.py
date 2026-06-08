@@ -13,6 +13,90 @@ DIAS_MAP = {
     "domingo": 6
 }
 
+def auto_cerrar_sesiones_abiertas(conn):
+    cursor = conn.cursor()
+    try:
+        now_col = datetime.now(timezone(timedelta(hours=-5)))
+        cursor.execute("""
+            SELECT s.id, s.fecha, h.hora_fin, h.docente_id, h.id as horario_id
+            FROM sesiones_clase s
+            JOIN horarios h ON h.id = s.horario_id
+            WHERE s.estado = 'abierta'
+        """)
+        open_sessions = cursor.fetchall()
+        
+        for sess in open_sessions:
+            s_date = sess["fecha"]
+            if isinstance(s_date, str):
+                s_date = datetime.strptime(s_date[:10], "%Y-%m-%d").date()
+            
+            h_fin = sess["hora_fin"]
+            if isinstance(h_fin, str):
+                try:
+                    h_fin = datetime.strptime(h_fin[:5], "%H:%M").time()
+                except:
+                    h_fin = time(23, 59)
+            elif hasattr(h_fin, "hour"):
+                h_fin = h_fin
+            else:
+                total_sec = int(h_fin.total_seconds())
+                h_fin = time(total_sec // 3600, (total_sec % 3600) // 60)
+                
+            end_dt = datetime.combine(s_date, h_fin)
+            end_dt = end_dt.replace(tzinfo=timezone(timedelta(hours=-5)))
+            
+            if now_col > end_dt + timedelta(minutes=30):
+                # Verificar si el docente registró su asistencia (entrada) en asistencias para esta sesión
+                cursor.execute("""
+                    SELECT COUNT(*) FROM asistencias
+                    WHERE sesion_id = %s AND usuario_id = %s AND estado = 'asistencia'
+                """, (sess["id"], sess["docente_id"]))
+                row = cursor.fetchone()
+                count_att = list(row.values())[0] if isinstance(row, dict) else row[0]
+                
+                if count_att > 0:
+                    # El docente sí asistió pero la sesión se quedó 'abierta'. La cerramos como 'completa'.
+                    print(f"[AUTO-CIERRE] Cerrando sesion {sess['id']} como COMPLETA (docente asistió).")
+                    cursor.execute("""
+                        UPDATE sesiones_clase
+                        SET estado = 'completa', docente_asistio = TRUE
+                        WHERE id = %s
+                    """, (sess["id"],))
+                else:
+                    # El docente no registró su asistencia. Cambiar a 'no_completada'.
+                    print(f"[AUTO-CIERRE] Cerrando sesion {sess['id']} como NO_COMPLETADA (docente ausente).")
+                    cursor.execute("""
+                        UPDATE sesiones_clase
+                        SET estado = 'no_completada', docente_asistio = FALSE, motivo_ausencia_docente = 'Auto-cierre: sin registro de asistencia'
+                        WHERE id = %s
+                    """, (sess["id"],))
+                    
+                    # Registrar/actualizar inasistencia del docente
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM asistencias WHERE sesion_id = %s AND usuario_id = %s
+                    """, (sess["id"], sess["docente_id"]))
+                    exists_row = cursor.fetchone()
+                    exists_count = list(exists_row.values())[0] if isinstance(exists_row, dict) else exists_row[0]
+                    
+                    if exists_count == 0:
+                        cursor.execute("""
+                            INSERT INTO asistencias (horario_id, usuario_id, hora_entrada, metodo_verificacion, estado, aula, fecha, sesion_id, observacion)
+                            VALUES (%s, %s, NULL, NULL, 'inasistencia', 
+                                    (SELECT aula FROM sesiones_clase WHERE id = %s), 
+                                    (SELECT fecha FROM sesiones_clase WHERE id = %s), %s, 'Auto-cierre: sin registro de asistencia')
+                        """, (sess["horario_id"], sess["docente_id"], sess["id"], sess["id"], sess["id"]))
+                    else:
+                        cursor.execute("""
+                            UPDATE asistencias
+                            SET estado = 'inasistencia', observacion = 'Auto-cierre: sin registro de asistencia'
+                            WHERE sesion_id = %s AND usuario_id = %s
+                        """, (sess["id"], sess["docente_id"]))
+                        
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"[ERROR] en auto_cerrar_sesiones_abiertas: {str(e)}")
+
 def conciliar_sesiones_pasadas(conn):
     """
     Concilia las sesiones de clase pasadas del semestre activo.
@@ -21,6 +105,7 @@ def conciliar_sesiones_pasadas(conn):
     2. Registra inasistencias en la tabla asistencias para docentes cuando no dictaron clase.
     3. Registra inasistencias en la tabla asistencias para estudiantes cuando hubo clase pero no asistieron.
     """
+    auto_cerrar_sesiones_abiertas(conn)
     cursor = conn.cursor()
     try:
         # 1. Obtener semestre activo

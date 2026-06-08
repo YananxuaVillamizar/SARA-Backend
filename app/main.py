@@ -23,6 +23,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from app.migrations import run_migrations
+import asyncio
+from app.database import get_connection
+from app.reconciliation import conciliar_sesiones_pasadas
+
+async def periodic_reconciliation():
+    while True:
+        try:
+            print("[BACKGROUND TASK] Running sessions reconciliation...")
+            loop = asyncio.get_running_loop()
+            def run_sync():
+                conn = get_connection()
+                try:
+                    conciliar_sesiones_pasadas(conn)
+                finally:
+                    conn.close()
+            await loop.run_in_executor(None, run_sync)
+        except Exception as e:
+            print(f"[BACKGROUND TASK ERROR] Error in periodic_reconciliation: {e}")
+        await asyncio.sleep(300) # Every 5 minutes
+
+@app.on_event("startup")
+def startup_event():
+    run_migrations()
+    asyncio.create_task(periodic_reconciliation())
+
 # Registrar los routers — son como las secciones del menú del restaurante
 # Cada router agrupa endpoints relacionados
 app.include_router(auth.router,        prefix="/auth",        tags=["Autenticación"])

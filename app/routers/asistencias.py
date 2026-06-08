@@ -366,10 +366,10 @@ def reporte_docente(num_doc: str):
                 asig.nombre AS asignatura,
                 h.grupo,
                 COUNT(*) AS total_sesiones,
-                COUNT(*) FILTER (WHERE s.docente_asistio = TRUE) AS sesiones_dictadas,
-                COUNT(*) FILTER (WHERE s.docente_asistio = FALSE) AS inasistencias,
+                COUNT(*) FILTER (WHERE s.docente_asistio = TRUE AND COALESCE((SELECT a2.estado FROM asistencias a2 WHERE a2.usuario_id = doc.id AND a2.sesion_id = s.id LIMIT 1), '') <> 'inasistencia') AS sesiones_dictadas,
+                COUNT(*) FILTER (WHERE s.docente_asistio = FALSE OR COALESCE((SELECT a2.estado FROM asistencias a2 WHERE a2.usuario_id = doc.id AND a2.sesion_id = s.id LIMIT 1), '') = 'inasistencia') AS inasistencias,
                 ROUND(
-                    COUNT(*) FILTER (WHERE s.docente_asistio = TRUE)
+                    COUNT(*) FILTER (WHERE s.docente_asistio = TRUE AND COALESCE((SELECT a2.estado FROM asistencias a2 WHERE a2.usuario_id = doc.id AND a2.sesion_id = s.id LIMIT 1), '') <> 'inasistencia')
                     * 100.0 / COUNT(*), 1
                 ) AS porcentaje_cumplimiento
             FROM sesiones_clase s
