@@ -14,4 +14,8 @@ def get_connection():
     diccionarios {columna: valor} en lugar de tuplas.
     """
     conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    # Configurar la zona horaria de la sesión a Colombia
+    cursor = conn.cursor()
+    cursor.execute("SET TIME ZONE 'America/Bogota';")
+    cursor.close()
     return conn
