@@ -187,7 +187,7 @@ def get_admin_stats(rol: Optional[str] = "todos", semana: Optional[str] = "actua
             """, (fecha_inicio, fecha_fin))
         
         sesiones_raw = cursor.fetchall()
-        cumplimiento_docente_pct = "100%"
+        cumplimiento_docente_pct = "0%"
         
         if sesiones_raw:
             df_s = pd.DataFrame(sesiones_raw)
@@ -210,7 +210,7 @@ def get_admin_stats(rol: Optional[str] = "todos", semana: Optional[str] = "actua
                     score = (n_dictadas + n_compensadas) / n_regulares_totales
                     schedules_compliance.append(score)
                 else:
-                    schedules_compliance.append(1.0)
+                    schedules_compliance.append(0.0)
                     
             if schedules_compliance:
                 avg_score = np.mean(schedules_compliance)
@@ -260,7 +260,9 @@ def get_admin_stats(rol: Optional[str] = "todos", semana: Optional[str] = "actua
         cursor.execute(query_asistencias, params)
         asistencias_raw = cursor.fetchall()
         
-        semana_actual = get_semana_semestre(datetime.now(timezone(timedelta(hours=-5))).date(), fecha_inicio)
+        dias_total = (fecha_fin - fecha_inicio).days
+        semanas_semestre = max(1, (dias_total + 6) // 7)
+        semana_actual = min(get_semana_semestre(datetime.now(timezone(timedelta(hours=-5))).date(), fecha_inicio), semanas_semestre)
         
         if not asistencias_raw:
             return {
@@ -282,6 +284,7 @@ def get_admin_stats(rol: Optional[str] = "todos", semana: Optional[str] = "actua
                 "permanencia_tendencia": [],
                 "alertas_desercion": [],
                 "semana_actual": semana_actual,
+                "semanas_semestre": semanas_semestre,
                 "semestre_actual": nombre_semestre
             }
 
@@ -525,6 +528,7 @@ def get_admin_stats(rol: Optional[str] = "todos", semana: Optional[str] = "actua
             "asistencia_semanal": semanal_data,
             "alertas_desercion": alertas_desercion,
             "semana_actual": semana_actual,
+            "semanas_semestre": semanas_semestre,
             "semestre_actual": nombre_semestre
         }
 
