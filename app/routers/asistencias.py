@@ -68,7 +68,7 @@ def reporte_estudiante(num_doc: str):
             JOIN matriculas m ON m.asignatura_id = asig.id AND m.grupo = h.grupo
             JOIN usuarios u ON u.id = m.usuario_id
             LEFT JOIN asistencias a ON a.usuario_id = u.id AND a.sesion_id = s.id
-            WHERE u.num_doc = %s
+            WHERE u.num_doc = %s AND s.fecha >= m.fecha_inicio
             GROUP BY u.nombres, u.apellidos, asig.nombre, h.grupo
         """, (num_doc,))
 
@@ -137,6 +137,7 @@ def listar_asistencias(docente_id: Optional[str] = None, usuario_id: Optional[st
                 fac.nombre AS facultad,
                 s.aula AS aula_sesion,
                 doc.num_doc AS docente_num_doc,
+                m.fecha_inicio,
                 (SELECT a2.hora_entrada FROM asistencias a2 WHERE a2.usuario_id = h.docente_id AND a2.sesion_id = s.id LIMIT 1) AS docente_hora_entrada,
                 (SELECT a2.hora_salida FROM asistencias a2 WHERE a2.usuario_id = h.docente_id AND a2.sesion_id = s.id LIMIT 1) AS docente_hora_salida,
                 (SELECT a2.metodo_verificacion FROM asistencias a2 WHERE a2.usuario_id = h.docente_id AND a2.sesion_id = s.id LIMIT 1) AS docente_metodo_verificacion,
@@ -218,10 +219,37 @@ def listar_asistencias(docente_id: Optional[str] = None, usuario_id: Optional[st
                         
         combined_result = [dict(r) for r in result] + synthetic_rows
         
-        # 3. Calcular semanas
+        # 3. Calcular semanas y filtrar por fecha de matrícula del estudiante
         registros = []
         
         for d in combined_result:
+            f = d.get('fecha')
+            f_ini = d.get('fecha_inicio')
+            if f and f_ini:
+                # Normalizar fechas para comparación
+                from datetime import date
+                val_f = f
+                val_ini = f_ini
+                if isinstance(val_f, str):
+                    try:
+                        val_f = datetime.strptime(val_f[:10], "%Y-%m-%d").date()
+                    except:
+                        pass
+                elif isinstance(val_f, datetime):
+                    val_f = val_f.date()
+                    
+                if isinstance(val_ini, str):
+                    try:
+                        val_ini = datetime.strptime(val_ini[:10], "%Y-%m-%d").date()
+                    except:
+                        pass
+                elif isinstance(val_ini, datetime):
+                    val_ini = val_ini.date()
+                    
+                if isinstance(val_f, (datetime, date)) and isinstance(val_ini, (datetime, date)) and val_f < val_ini:
+                    # Omitir registros de clases previas a su matrícula
+                    continue
+
             if fecha_inicio_semestre and d.get('fecha'):
                 f = d['fecha']
                 if isinstance(f, str):

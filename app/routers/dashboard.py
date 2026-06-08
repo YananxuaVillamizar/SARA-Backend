@@ -255,6 +255,21 @@ def get_admin_stats(rol: Optional[str] = "todos", semana: Optional[str] = "actua
         """
         params = [fecha_inicio, fecha_fin]
         
+        # Filtrar asistencias de estudiantes para que solo cuenten a partir de su fecha_inicio de matrícula
+        query_asistencias += """
+            AND (
+                r.nombre != 'Estudiante' 
+                OR s.fecha >= COALESCE(
+                    (SELECT m.fecha_inicio FROM matriculas m 
+                     WHERE m.usuario_id = a.usuario_id 
+                       AND m.asignatura_id = h.asignatura_id 
+                       AND m.grupo = h.grupo 
+                     LIMIT 1), 
+                    s.fecha
+                )
+            )
+        """
+        
         if rol_clean == "estudiante":
             query_asistencias += " AND s.docente_asistio = TRUE AND r.nombre = 'Estudiante'"
         elif rol_clean == "docente":
@@ -592,7 +607,7 @@ def get_estudiante_stats(usuario_id: str):
             JOIN horarios h ON h.asignatura_id = asig.id AND h.grupo = m.grupo
             JOIN sesiones_clase s ON s.horario_id = h.id
             LEFT JOIN asistencias a ON a.usuario_id = m.usuario_id AND a.sesion_id = s.id
-            WHERE m.usuario_id = %s AND s.fecha >= %s AND s.fecha <= %s AND s.docente_asistio = TRUE
+            WHERE m.usuario_id = %s AND s.fecha >= %s AND s.fecha <= %s AND s.docente_asistio = TRUE AND s.fecha >= m.fecha_inicio
         """, (usuario_id, fecha_inicio, fecha_fin))
 
         clases_raw = cursor.fetchall()
@@ -1128,6 +1143,14 @@ def obtener_alertas_usuario(usuario_id: str):
                 JOIN asignaturas asig ON asig.id = h.asignatura_id
                 JOIN sesiones_clase s ON s.id = a.sesion_id
                 WHERE s.fecha >= %s AND s.fecha <= %s AND r.nombre = 'Estudiante' AND s.docente_asistio = TRUE
+                  AND s.fecha >= COALESCE(
+                      (SELECT m.fecha_inicio FROM matriculas m 
+                       WHERE m.usuario_id = a.usuario_id 
+                         AND m.asignatura_id = h.asignatura_id 
+                         AND m.grupo = h.grupo 
+                       LIMIT 1), 
+                      s.fecha
+                  )
             """, (fecha_inicio, fecha_fin))
             asistencias_raw = cursor.fetchall()
             
@@ -1195,6 +1218,14 @@ def obtener_alertas_usuario(usuario_id: str):
                 JOIN asignaturas asig ON asig.id = h.asignatura_id
                 JOIN sesiones_clase s ON s.id = a.sesion_id
                 WHERE s.fecha >= %s AND s.fecha <= %s AND r.nombre = 'Estudiante' AND h.docente_id = %s AND s.docente_asistio = TRUE
+                  AND s.fecha >= COALESCE(
+                      (SELECT m.fecha_inicio FROM matriculas m 
+                       WHERE m.usuario_id = a.usuario_id 
+                         AND m.asignatura_id = h.asignatura_id 
+                         AND m.grupo = h.grupo 
+                       LIMIT 1), 
+                      s.fecha
+                  )
             """, (fecha_inicio, fecha_fin, usuario_id))
             asistencias_raw = cursor.fetchall()
             if asistencias_raw:
@@ -1222,6 +1253,14 @@ def obtener_alertas_usuario(usuario_id: str):
                 JOIN asignaturas asig ON asig.id = h.asignatura_id
                 JOIN sesiones_clase s ON s.id = a.sesion_id
                 WHERE a.usuario_id = %s AND s.fecha >= %s AND s.fecha <= %s AND s.docente_asistio = TRUE
+                  AND s.fecha >= COALESCE(
+                      (SELECT m.fecha_inicio FROM matriculas m 
+                       WHERE m.usuario_id = a.usuario_id 
+                         AND m.asignatura_id = h.asignatura_id 
+                         AND m.grupo = h.grupo 
+                       LIMIT 1), 
+                      s.fecha
+                  )
             """, (usuario_id, fecha_inicio, fecha_fin))
             asistencias_raw = cursor.fetchall()
             if asistencias_raw:

@@ -126,6 +126,18 @@ def conciliar_sesiones_pasadas(conn):
         today = datetime.now(timezone(timedelta(hours=-5))).date()
         limite_fecha = min(fecha_fin, today)
         
+        # 1.1 Limpiar registros de inasistencias de estudiantes para fechas previas a su matrícula
+        cursor.execute("""
+            DELETE FROM asistencias a
+            USING matriculas m, horarios h
+            WHERE a.usuario_id = m.usuario_id
+              AND h.asignatura_id = m.asignatura_id AND h.grupo = m.grupo
+              AND a.horario_id = h.id
+              AND a.estado = 'inasistencia'
+              AND a.fecha < m.fecha_inicio
+        """)
+        conn.commit()
+
         # 2. Obtener todos los horarios
         cursor.execute("""
             SELECT id as horario_id, dia_semana, hora_inicio, hora_fin, docente_id, aula 
@@ -259,7 +271,7 @@ def conciliar_sesiones_pasadas(conn):
             
         # 8. Inasistencias de Estudiantes (cuando hubo clase pero no asistieron)
         cursor.execute("""
-            SELECT h.id as horario_id, m.usuario_id 
+            SELECT h.id as horario_id, m.usuario_id, m.fecha_inicio 
             FROM matriculas m
             JOIN horarios h ON h.asignatura_id = m.asignatura_id AND h.grupo = m.grupo
         """)
@@ -268,18 +280,38 @@ def conciliar_sesiones_pasadas(conn):
         for mr in matriculas_raw:
             h_id = str(mr["horario_id"])
             u_id = str(mr["usuario_id"])
+            f_ini = mr["fecha_inicio"]
+            if isinstance(f_ini, str):
+                try:
+                    f_ini = datetime.strptime(f_ini[:10], "%Y-%m-%d").date()
+                except:
+                    f_ini = None
+            elif isinstance(f_ini, datetime):
+                f_ini = f_ini.date()
+                
             if h_id not in estudiantes_por_horario:
                 estudiantes_por_horario[h_id] = []
-            estudiantes_por_horario[h_id].append(u_id)
+            estudiantes_por_horario[h_id].append((u_id, f_ini))
             
         estudiantes_inasistencias_a_crear = []
         for s in sesiones_db:
             if s["docente_asistio"]:
                 ses_id = str(s["sesion_id"])
                 h_id = str(s["horario_id"])
+                s_fecha = s["fecha"]
+                if isinstance(s_fecha, str):
+                    try:
+                        s_fecha = datetime.strptime(s_fecha[:10], "%Y-%m-%d").date()
+                    except:
+                        s_fecha = None
+                elif isinstance(s_fecha, datetime):
+                    s_fecha = s_fecha.date()
                 
                 estudiantes = estudiantes_por_horario.get(h_id, [])
-                for est_id in estudiantes:
+                for est_id, f_ini in estudiantes:
+                    # No registrar inasistencia si la clase ocurrió antes de que el estudiante se matriculara
+                    if f_ini and s_fecha and s_fecha < f_ini:
+                        continue
                     if (ses_id, est_id) not in asistencias_existentes:
                         estudiantes_inasistencias_a_crear.append({
                             "horario_id": h_id,
