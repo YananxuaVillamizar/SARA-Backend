@@ -44,7 +44,13 @@ def auto_cerrar_sesiones_abiertas(conn):
                 
             end_dt = datetime.combine(s_date, h_fin)
             end_dt = end_dt.replace(tzinfo=timezone(timedelta(hours=-5)))
-            
+
+            # Solo cerrar la sesión si ya pasó la hora_fin (no antes).
+            # La tolerancia de 30 min se aplica solo DESPUÉS de hora_fin.
+            if now_col <= end_dt:
+                # La clase aún no ha terminado; no tocar
+                continue
+
             if now_col > end_dt + timedelta(minutes=30):
                 # Verificar si el docente registró su asistencia (entrada) en asistencias para esta sesión
                 cursor.execute("""
@@ -196,11 +202,16 @@ def conciliar_sesiones_pasadas(conn):
             curr = fecha_inicio
             while curr <= limite_fecha:
                 if curr.weekday() == target_weekday:
-                    # Si es hoy, verificar si ya pasó la hora de fin de clase
-                    if curr == today and current_time < hora_fin:
-                        curr += date.resolution
-                        continue
-                        
+                    # Si es hoy, verificar con datetime-aware TZ Colombia si ya pasó hora_fin
+                    if curr == today:
+                        fin_dt_col = datetime.combine(curr, hora_fin).replace(
+                            tzinfo=timezone(timedelta(hours=-5))
+                        )
+                        if now <= fin_dt_col:
+                            # La clase de hoy todavía no ha terminado; no crear fantasma
+                            curr += date.resolution
+                            continue
+
                     # Si no existe sesión física ni se ha conciliado esa semana para este horario, la creamos
                     lunes_curr = curr - timedelta(days=curr.weekday())
                     if (h_id, curr) not in sesiones_existentes and (h_id, lunes_curr) not in semanas_reconciliadas:

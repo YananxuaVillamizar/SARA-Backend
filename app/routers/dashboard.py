@@ -106,11 +106,11 @@ def get_admin_stats(rol: Optional[str] = "todos", semana: Optional[str] = "actua
             contingencias_pendientes = cursor.fetchone()["count"]
             
         elif rol_usuario == "Estudiante":
-            # Para Estudiantes, total_estudiantes representará sus materias matriculadas
+            # Para Estudiantes, total_estudiantes representará sus materias matriculadas activas
             cursor.execute("""
                 SELECT COUNT(*) as count
                 FROM matriculas m
-                WHERE m.usuario_id = %s
+                WHERE m.usuario_id = %s AND m.estado = 'activa'
             """, (usuario_autenticado_id,))
             total_est_mat = cursor.fetchone()["count"]
             estudiantes_value = f"{total_est_mat}"
@@ -147,12 +147,12 @@ def get_admin_stats(rol: Optional[str] = "todos", semana: Optional[str] = "actua
             
             estudiantes_value = f"{active_estudiantes} / {total_estudiantes}"
 
+            # Docentes activos: todos los docentes con u.activo = TRUE (con o sin horario)
             cursor.execute("""
-                SELECT COUNT(DISTINCT h.docente_id) as count 
-                FROM horarios h
-                JOIN usuarios u ON u.id = h.docente_id
+                SELECT COUNT(*) as count
+                FROM usuarios u
                 JOIN roles r ON r.id = u.rol_id
-                WHERE r.nombre = 'Docente'
+                WHERE r.nombre = 'Docente' AND u.activo = TRUE
             """)
             active_docentes = cursor.fetchone()["count"]
 

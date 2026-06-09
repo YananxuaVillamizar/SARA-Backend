@@ -96,6 +96,18 @@ def run_migrations():
         """)
         conn.commit()
 
+        # 9. Reiniciar la secuencia de IDs de biometric_pending_commands al valor correcto
+        # Si la tabla está vacía → próximo ID será 1. Si tiene datos → MAX(id)+1. Idempotente.
+        logger.info("Migración: Reiniciando secuencia de biometric_pending_commands...")
+        cursor.execute("""
+            SELECT setval(
+                pg_get_serial_sequence('biometric_pending_commands', 'id'),
+                COALESCE((SELECT MAX(id) FROM biometric_pending_commands), 0) + 1,
+                false
+            );
+        """)
+        conn.commit()
+
         logger.info("¡Migraciones automáticas de base de datos SARA completadas con éxito!")
     except Exception as e:
         if conn:
