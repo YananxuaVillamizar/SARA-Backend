@@ -1301,3 +1301,105 @@ def obtener_alertas_usuario(usuario_id: str):
     finally:
         if conn:
             conn.close()
+
+
+@router.get("/horario-semanal/{usuario_id}")
+def get_horario_semanal(usuario_id: str, rol: str):
+    """
+    Retorna el horario semanal completo de un usuario (Docente o Estudiante).
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        rol_clean = rol.lower().strip()
+        if rol_clean == "docente":
+            cursor.execute("""
+                SELECT 
+                    h.id, 
+                    h.dia_semana, 
+                    h.hora_inicio, 
+                    h.hora_fin, 
+                    h.aula, 
+                    h.grupo,
+                    a.nombre AS asignatura, 
+                    a.codigo AS cod_asignatura,
+                    u.nombres AS docente, 
+                    u.apellidos AS apellido_docente
+                FROM horarios h
+                JOIN asignaturas a ON a.id = h.asignatura_id
+                JOIN usuarios u ON u.id = h.docente_id
+                WHERE h.docente_id = %s
+                ORDER BY 
+                    CASE LOWER(h.dia_semana)
+                        WHEN 'lunes' THEN 1
+                        WHEN 'martes' THEN 2
+                        WHEN 'miercoles' THEN 3
+                        WHEN 'miércoles' THEN 3
+                        WHEN 'jueves' THEN 4
+                        WHEN 'viernes' THEN 5
+                        WHEN 'sabado' THEN 6
+                        WHEN 'sábado' THEN 6
+                        ELSE 7
+                    END,
+                    h.hora_inicio
+            """, (usuario_id,))
+        elif rol_clean == "estudiante":
+            cursor.execute("""
+                SELECT 
+                    h.id, 
+                    h.dia_semana, 
+                    h.hora_inicio, 
+                    h.hora_fin, 
+                    h.aula, 
+                    h.grupo,
+                    a.nombre AS asignatura, 
+                    a.codigo AS cod_asignatura,
+                    u.nombres AS docente, 
+                    u.apellidos AS apellido_docente
+                FROM matriculas m
+                JOIN asignaturas a ON a.id = m.asignatura_id
+                JOIN horarios h ON h.asignatura_id = a.id AND h.grupo = m.grupo
+                JOIN usuarios u ON u.id = h.docente_id
+                WHERE m.usuario_id = %s AND m.estado = 'activa'
+                ORDER BY 
+                    CASE LOWER(h.dia_semana)
+                        WHEN 'lunes' THEN 1
+                        WHEN 'martes' THEN 2
+                        WHEN 'miercoles' THEN 3
+                        WHEN 'miércoles' THEN 3
+                        WHEN 'jueves' THEN 4
+                        WHEN 'viernes' THEN 5
+                        WHEN 'sabado' THEN 6
+                        WHEN 'sábado' THEN 6
+                        ELSE 7
+                    END,
+                    h.hora_inicio
+            """, (usuario_id,))
+        else:
+            raise HTTPException(status_code=400, detail="Rol no soportado para horarios semanales")
+
+        horarios = cursor.fetchall()
+        
+        result = []
+        for h in horarios:
+            result.append({
+                "id": h["id"],
+                "dia_semana": h["dia_semana"],
+                "hora_inicio": str(h["hora_inicio"])[:5],
+                "hora_fin": str(h["hora_fin"])[:5],
+                "aula": h["aula"],
+                "grupo": h["grupo"],
+                "asignatura": h["asignatura"],
+                "cod_asignatura": h["cod_asignatura"],
+                "docente": f"{h['docente']} {h['apellido_docente']}".strip()
+            })
+        return result
+    except Exception as e:
+        print(f"[ERROR] en get_horario_semanal: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            conn.close()
+
