@@ -923,7 +923,7 @@ def get_usuarios_filtro(rol: Optional[str] = "todos", docente_id: Optional[str] 
             conn.close()
 
 @router.get("/asignaturas-filtro")
-def get_asignaturas_filtro(usuario_id: Optional[str] = None):
+def get_asignaturas_filtro(usuario_id: Optional[str] = None, docente_id: Optional[str] = None):
     """
     Retorna la lista de asignaturas asociadas a un usuario específico o todas si no se provee.
     """
@@ -940,14 +940,25 @@ def get_asignaturas_filtro(usuario_id: Optional[str] = None):
             
             rol = user_role_row["rol"]
             if rol == "Estudiante":
-                query = """
-                    SELECT DISTINCT asig.id, asig.nombre
-                    FROM matriculas m
-                    JOIN asignaturas asig ON asig.id = m.asignatura_id
-                    WHERE m.usuario_id = %s
-                    ORDER BY asig.nombre ASC
-                """
-                cursor.execute(query, (usuario_id,))
+                if docente_id:
+                    query = """
+                        SELECT DISTINCT asig.id, asig.nombre
+                        FROM matriculas m
+                        JOIN asignaturas asig ON asig.id = m.asignatura_id
+                        JOIN horarios h ON h.asignatura_id = asig.id AND h.grupo = m.grupo
+                        WHERE m.usuario_id = %s AND h.docente_id = %s AND m.estado = 'activa'
+                        ORDER BY asig.nombre ASC
+                    """
+                    cursor.execute(query, (usuario_id, docente_id))
+                else:
+                    query = """
+                        SELECT DISTINCT asig.id, asig.nombre
+                        FROM matriculas m
+                        JOIN asignaturas asig ON asig.id = m.asignatura_id
+                        WHERE m.usuario_id = %s
+                        ORDER BY asig.nombre ASC
+                    """
+                    cursor.execute(query, (usuario_id,))
             elif rol == "Docente":
                 query = """
                     SELECT DISTINCT asig.id, asig.nombre
