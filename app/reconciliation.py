@@ -18,7 +18,7 @@ def auto_cerrar_sesiones_abiertas(conn):
     try:
         now_col = datetime.now(timezone(timedelta(hours=-5)))
         cursor.execute("""
-            SELECT s.id, s.fecha, h.hora_fin, h.docente_id, h.id as horario_id
+            SELECT s.id, s.fecha, s.tipo, h.hora_inicio, h.hora_fin, h.docente_id, h.id as horario_id
             FROM sesiones_clase s
             JOIN horarios h ON h.id = s.horario_id
             WHERE s.estado = 'abierta'
@@ -30,23 +30,70 @@ def auto_cerrar_sesiones_abiertas(conn):
             if isinstance(s_date, str):
                 s_date = datetime.strptime(s_date[:10], "%Y-%m-%d").date()
             
+            tipo_sesion = (sess.get("tipo") or "ordinaria").lower().strip()
+            
+            h_inicio = sess["hora_inicio"]
             h_fin = sess["hora_fin"]
-            if isinstance(h_fin, str):
-                try:
-                    h_fin = datetime.strptime(h_fin[:5], "%H:%M").time()
-                except:
-                    h_fin = time(23, 59)
-            elif hasattr(h_fin, "hour"):
-                h_fin = h_fin
-            else:
-                total_sec = int(h_fin.total_seconds())
-                h_fin = time(total_sec // 3600, (total_sec % 3600) // 60)
+            
+            # Helper para parsear hora
+            def parse_time(t_val):
+                if isinstance(t_val, str):
+                    try:
+                        return datetime.strptime(t_val[:5], "%H:%M").time()
+                    except:
+                        return time(0, 0)
+                elif hasattr(t_val, "hour"):
+                    return t_val
+                elif t_val is not None:
+                    total_sec = int(t_val.total_seconds())
+                    return time(total_sec // 3600, (total_sec % 3600) // 60)
+                return time(0, 0)
+            
+            t_inicio = parse_time(h_inicio)
+            t_fin = parse_time(h_fin)
+            
+            if tipo_sesion == "extraordinaria":
+                # Calcular la duración programada de la clase a partir del horario
+                dt_inicio_prog = datetime.combine(date.min, t_inicio)
+                dt_fin_prog = datetime.combine(date.min, t_fin)
+                if dt_fin_prog < dt_inicio_prog:
+                    dt_fin_prog += timedelta(days=1)
+                duracion_programada = dt_fin_prog - dt_inicio_prog
                 
-            end_dt = datetime.combine(s_date, h_fin)
-            end_dt = end_dt.replace(tzinfo=timezone(timedelta(hours=-5)))
+                # Obtener la hora_entrada del docente para esa sesión (hora de apertura real)
+                cursor.execute("""
+                    SELECT hora_entrada FROM asistencias
+                    WHERE sesion_id = %s AND usuario_id = %s AND hora_entrada IS NOT NULL
+                    LIMIT 1
+                """, (sess["id"], sess["docente_id"]))
+                doc_att_row = cursor.fetchone()
+                
+                if doc_att_row and doc_att_row["hora_entrada"]:
+                    hora_entrada_doc = doc_att_row["hora_entrada"]
+                    if isinstance(hora_entrada_doc, str):
+                        try:
+                            hora_entrada_doc = datetime.strptime(hora_entrada_doc, "%Y-%m-%d %H:%M:%S")
+                        except:
+                            try:
+                                hora_entrada_doc = datetime.fromisoformat(hora_entrada_doc)
+                            except:
+                                hora_entrada_doc = datetime.now(timezone(timedelta(hours=-5)))
+                    
+                    if hora_entrada_doc.tzinfo is None:
+                        hora_entrada_doc = hora_entrada_doc.replace(tzinfo=timezone(timedelta(hours=-5)))
+                    else:
+                        hora_entrada_doc = hora_entrada_doc.astimezone(timezone(timedelta(hours=-5)))
+                    
+                    end_dt = hora_entrada_doc + duracion_programada
+                else:
+                    # Si no hay hora de entrada, usar por defecto la fecha y t_fin
+                    end_dt = datetime.combine(s_date, t_fin).replace(tzinfo=timezone(timedelta(hours=-5)))
+            else:
+                # Sesión ordinaria: se cierra basándose en la hora de finalización del horario
+                end_dt = datetime.combine(s_date, t_fin).replace(tzinfo=timezone(timedelta(hours=-5)))
 
             # Solo cerrar la sesión si ya pasó la hora_fin (no antes).
-            # La tolerancia de 30 min se aplica solo DESPUÉS de hora_fin.
+            # La tolerancia de 30 min se aplica solo DESPUÉS de end_dt.
             if now_col <= end_dt:
                 # La clase aún no ha terminado; no tocar
                 continue
@@ -55,14 +102,14 @@ def auto_cerrar_sesiones_abiertas(conn):
                 # Verificar si el docente registró su asistencia (entrada) en asistencias para esta sesión
                 cursor.execute("""
                     SELECT COUNT(*) FROM asistencias
-                    WHERE sesion_id = %s AND usuario_id = %s AND estado = 'asistencia'
+                    WHERE sesion_id = %s AND usuario_id = %s AND hora_entrada IS NOT NULL
                 """, (sess["id"], sess["docente_id"]))
                 row = cursor.fetchone()
                 count_att = list(row.values())[0] if isinstance(row, dict) else row[0]
                 
                 if count_att > 0:
                     # El docente sí asistió pero la sesión se quedó 'abierta'. La cerramos como 'completa'.
-                    print(f"[AUTO-CIERRE] Cerrando sesion {sess['id']} como COMPLETA (docente asistió).")
+                    print(f"[AUTO-CIERRE] Cerrando sesion {sess['id']} ({tipo_sesion}) como COMPLETA (docente asistió).")
                     cursor.execute("""
                         UPDATE sesiones_clase
                         SET estado = 'completa', docente_asistio = TRUE
@@ -70,7 +117,7 @@ def auto_cerrar_sesiones_abiertas(conn):
                     """, (sess["id"],))
                 else:
                     # El docente no registró su asistencia. Cambiar a 'no_completada'.
-                    print(f"[AUTO-CIERRE] Cerrando sesion {sess['id']} como NO_COMPLETADA (docente ausente).")
+                    print(f"[AUTO-CIERRE] Cerrando sesion {sess['id']} ({tipo_sesion}) como NO_COMPLETADA (docente ausente).")
                     cursor.execute("""
                         UPDATE sesiones_clase
                         SET estado = 'no_completada', docente_asistio = FALSE, motivo_ausencia_docente = 'Auto-cierre: sin registro de asistencia'

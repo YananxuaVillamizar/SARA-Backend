@@ -108,6 +108,23 @@ def run_migrations():
         """)
         conn.commit()
 
+        # 10. Crear tabla notificaciones si no existe
+        logger.info("Migración: Verificando tabla 'notificaciones'...")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS notificaciones (
+                id UUID PRIMARY KEY,
+                usuario_id UUID NOT NULL,
+                tipo VARCHAR(50) NOT NULL,
+                titulo VARCHAR(200) NOT NULL,
+                descripcion TEXT NOT NULL,
+                limpiada BOOLEAN DEFAULT FALSE,
+                fecha_creacion TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                ref_id VARCHAR(100),
+                CONSTRAINT fk_usuario_notificaciones FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
+            );
+        """)
+        conn.commit()
+
         logger.info("¡Migraciones automáticas de base de datos SARA completadas con éxito!")
     except Exception as e:
         if conn:

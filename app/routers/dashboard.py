@@ -595,6 +595,15 @@ def get_estudiante_stats(usuario_id: str):
             fecha_fin = sem_row["fecha_fin"]
             nombre_semestre = sem_row["nombre"]
 
+        # Obtener las asignaturas matriculadas activas del estudiante directamente
+        cursor.execute("""
+            SELECT DISTINCT asig.nombre
+            FROM matriculas m
+            JOIN asignaturas asig ON asig.id = m.asignatura_id
+            WHERE m.usuario_id = %s AND m.estado = 'activa'
+        """, (usuario_id,))
+        matriculadas = cursor.fetchall()
+
         cursor.execute("""
             SELECT 
                 asig.nombre AS asignatura,
@@ -650,9 +659,17 @@ def get_estudiante_stats(usuario_id: str):
             })
 
         if not clases_raw:
+            asig_list = []
+            for mat in matriculadas:
+                asig_list.append({
+                    "nombre": mat["nombre"],
+                    "porcentaje": 100,
+                    "dictadas": 0,
+                    "asistidas": 0
+                })
             return {
-                "asistencia_general": "0%",
-                "asignaturas_asistencias": [],
+                "asistencia_general": "100%",
+                "asignaturas_asistencias": asig_list,
                 "desglose_puntualidad": [
                     {"name": "A tiempo", "value": 0, "color": "#10B981"},
                     {"name": "Tarde", "value": 0, "color": "#F59E0B"},
@@ -667,7 +684,7 @@ def get_estudiante_stats(usuario_id: str):
 
         total_sesiones = len(df)
         presentes = len(df[df["estado_norm"].isin(["Presente", "Tarde"])])
-        asistencia_acumulada_pct = f"{round((presentes / total_sesiones) * 100)}%" if total_sesiones > 0 else "0%"
+        asistencia_acumulada_pct = f"{round((presentes / total_sesiones) * 100)}%" if total_sesiones > 0 else "100%"
 
         a_tiempo = len(df[df["estado_norm"] == "Presente"])
         tarde = len(df[df["estado_norm"] == "Tarde"])
@@ -679,18 +696,31 @@ def get_estudiante_stats(usuario_id: str):
             {"name": "Ausente", "value": ausente, "color": "#EF4444"}
         ]
 
-        asig_list = []
+        asig_map = {}
         for asig_nombre, df_asig in df.groupby("asignatura"):
             t_asig = len(df_asig)
             p_asig = len(df_asig[df_asig["estado_norm"].isin(["Presente", "Tarde"])])
-            pct_asig = round((p_asig / t_asig) * 100) if t_asig > 0 else 0
+            pct_asig = round((p_asig / t_asig) * 100) if t_asig > 0 else 100
             
-            asig_list.append({
+            asig_map[asig_nombre] = {
                 "nombre": asig_nombre,
                 "porcentaje": pct_asig,
                 "dictadas": t_asig,
                 "asistidas": p_asig
-            })
+            }
+
+        asig_list = []
+        for mat in matriculadas:
+            nombre_materia = mat["nombre"]
+            if nombre_materia in asig_map:
+                asig_list.append(asig_map[nombre_materia])
+            else:
+                asig_list.append({
+                    "nombre": nombre_materia,
+                    "porcentaje": 100,
+                    "dictadas": 0,
+                    "asistidas": 0
+                })
 
         return {
             "asistencia_general": asistencia_acumulada_pct,
@@ -1305,9 +1335,52 @@ def obtener_alertas_usuario(usuario_id: str):
                     "descripcion": f"La clase de {c['asignatura']} Grupo {c['grupo']} ({str(c['hora_inicio'])[:5]}) no fue dictada hoy debido a inasistencia docente."
                 })
                 
+        # Obtener notificaciones persistentes no limpiadas de la tabla
+        cursor.execute("""
+            SELECT id, tipo, titulo, descripcion, fecha_creacion
+            FROM notificaciones
+            WHERE usuario_id = %s AND limpiada = FALSE
+            ORDER BY fecha_creacion DESC
+        """, (usuario_id,))
+        persistentes = cursor.fetchall()
+        for p in persistentes:
+            alertas.append({
+                "id": str(p["id"]),
+                "tipo": p["tipo"],
+                "titulo": p["titulo"],
+                "descripcion": p["descripcion"],
+                "persistente": True
+            })
+            
         return alertas
     except Exception as e:
         print(f"[ERROR] en obtener_alertas_usuario: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.post("/alertas/{usuario_id}/limpiar")
+def limpiar_notificaciones(usuario_id: str):
+    """
+    Marca todas las notificaciones persistentes de un usuario como limpiadas/leídas
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE notificaciones
+            SET limpiada = TRUE
+            WHERE usuario_id = %s
+        """, (usuario_id,))
+        conn.commit()
+        return {"exito": True, "mensaje": "Notificaciones limpiadas con éxito"}
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"[ERROR] en limpiar_notificaciones: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:

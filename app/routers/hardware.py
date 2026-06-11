@@ -1518,8 +1518,61 @@ def confirm_biometric_command(request: SyncConfirmRequest):
             WHERE id = %s
         """, (nuevo_estado, request.comando_id))
         
+        # Obtener información del comando y del usuario afectado
+        cursor.execute("""
+            SELECT b.usuario_id, b.comando, u.nombres, u.apellidos, u.num_doc, b.fecha_creacion
+            FROM biometric_pending_commands b
+            JOIN usuarios u ON u.id = b.usuario_id
+            WHERE b.id = %s
+        """, (request.comando_id,))
+        cmd_info = cursor.fetchone()
+        
+        if cmd_info:
+            from datetime import datetime, timezone, timedelta
+            fullname = f"{cmd_info['nombres']} {cmd_info['apellidos']}"
+            num_doc = cmd_info['num_doc']
+            
+            # Obtener hora de reporte (hora actual Colombia)
+            hora_reporte = datetime.now(timezone(timedelta(hours=-5))).strftime("%Y-%m-%d %I:%M:%S %p")
+            
+            # Obtener y formatear hora de solicitud
+            f_creacion = cmd_info["fecha_creacion"]
+            if isinstance(f_creacion, datetime):
+                if f_creacion.tzinfo:
+                    f_creacion = f_creacion.astimezone(timezone(timedelta(hours=-5)))
+                hora_solicitud = f_creacion.strftime("%Y-%m-%d %I:%M:%S %p")
+            else:
+                hora_solicitud = str(f_creacion)
+                
+            ref_id = f"biometric_delete_{request.comando_id}"
+            
+            if nuevo_estado == 'COMPLETED':
+                titulo_act = "Eliminación de huella completada"
+                desc_afectado = f"Tu huella dactilar ({fullname}) ha sido eliminada exitosamente del lector biométrico. Solicitado el {hora_solicitud}, reportado exitoso el {hora_reporte}."
+                desc_admin = f"La huella del usuario {fullname} ({num_doc}) fue eliminada exitosamente del lector. Solicitado el {hora_solicitud}, completado el {hora_reporte}."
+                tipo_act = "info"
+            else:
+                titulo_act = "Fallo en eliminación de huella"
+                desc_afectado = f"Hubo un problema al intentar eliminar tu huella dactilar ({fullname}) del lector. Solicitado el {hora_solicitud}, reportado fallido el {hora_reporte}. El sistema reintentará más tarde."
+                desc_admin = f"Fallo al eliminar la huella del usuario {fullname} ({num_doc}) del lector. Solicitado el {hora_solicitud}, fallado el {hora_reporte}."
+                tipo_act = "critical"
+                
+            # Actualizar la notificación del usuario afectado
+            cursor.execute("""
+                UPDATE notificaciones
+                SET tipo = %s, titulo = %s, descripcion = %s
+                WHERE ref_id = %s AND usuario_id = %s
+            """, (tipo_act, titulo_act, desc_afectado, ref_id, cmd_info["usuario_id"]))
+            
+            # Actualizar la notificación de los admins
+            cursor.execute("""
+                UPDATE notificaciones
+                SET tipo = %s, titulo = %s, descripcion = %s
+                WHERE ref_id = %s AND usuario_id != %s
+            """, (tipo_act, titulo_act, desc_admin, ref_id, cmd_info["usuario_id"]))
+        
         conn.commit()
-        return {"exito": True, "mensaje": f"Comando actualizado a {nuevo_estado}"}
+        return {"exito": True, "mensaje": f"Comando actualizado a {nuevo_estado} y notificaciones actualizadas."}
     except Exception as e:
         if conn:
             conn.rollback()

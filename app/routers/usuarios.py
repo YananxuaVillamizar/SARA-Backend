@@ -261,17 +261,64 @@ def actualizar_usuario(num_doc: str, datos: UsuarioActualizar):
             valores.append(datos.autoriza_biometria)
             # Si se revoca la autorización, se elimina la huella automáticamente por privacidad de datos
             if datos.autoriza_biometria is False:
-                # Obtener el sensor_id/huella_id antes de eliminar el registro
+                # Obtener el sensor_id/huella_id y la información del usuario afectado antes de eliminar el registro
                 cursor.execute("""
                     SELECT sensor_id FROM templates_biometricos 
                     WHERE usuario_id = (SELECT id FROM usuarios WHERE num_doc = %s)
                 """, (num_doc,))
                 temp_row = cursor.fetchone()
-                if temp_row and temp_row["sensor_id"] is not None:
+                
+                cursor.execute("""
+                    SELECT id, nombres, apellidos FROM usuarios WHERE num_doc = %s
+                """, (num_doc,))
+                user_row = cursor.fetchone()
+
+                if temp_row and temp_row["sensor_id"] is not None and user_row:
+                    user_id = user_row["id"]
+                    fullname = f"{user_row['nombres']} {user_row['apellidos']}"
+                    
+                    # Obtener hora actual con zona horaria de Colombia
+                    from datetime import timezone, timedelta
+                    hora_solicitud = datetime.now(timezone(timedelta(hours=-5))).strftime("%Y-%m-%d %I:%M:%S %p")
+                    
                     cursor.execute("""
                         INSERT INTO biometric_pending_commands (usuario_id, huella_id, comando, estado)
-                        VALUES ((SELECT id FROM usuarios WHERE num_doc = %s), %s, 'DELETE', 'PENDING')
-                    """, (num_doc, temp_row["sensor_id"]))
+                        VALUES (%s, %s, 'DELETE', 'PENDING')
+                        RETURNING id
+                    """, (user_id, temp_row["sensor_id"]))
+                    cmd_row = cursor.fetchone()
+                    cmd_id = cmd_row["id"] if cmd_row else None
+                    
+                    if cmd_id:
+                        ref_id = f"biometric_delete_{cmd_id}"
+                        # 1. Notificación para el usuario afectado
+                        cursor.execute("""
+                            INSERT INTO notificaciones (id, usuario_id, tipo, titulo, descripcion, ref_id)
+                            VALUES (%s, %s, 'warning', 'Eliminación de huella pendiente', %s, %s)
+                        """, (
+                            str(uuid.uuid4()),
+                            user_id,
+                            f"Se ha solicitado la eliminación de tu huella dactilar ({fullname}). Operación en cola desde las {hora_solicitud}. Estado: Pendiente.",
+                            ref_id
+                        ))
+                        
+                        # 2. Notificaciones para todos los administradores
+                        cursor.execute("""
+                            SELECT u.id FROM usuarios u
+                            JOIN roles r ON r.id = u.rol_id
+                            WHERE r.nombre = 'Administrativo'
+                        """)
+                        admins = cursor.fetchall()
+                        for admin in admins:
+                            cursor.execute("""
+                                INSERT INTO notificaciones (id, usuario_id, tipo, titulo, descripcion, ref_id)
+                                VALUES (%s, %s, 'warning', 'Eliminación de huella pendiente', %s, %s)
+                            """, (
+                                str(uuid.uuid4()),
+                                admin["id"],
+                                f"Solicitud de eliminación de huella para el usuario {fullname} ({num_doc}). Creada el {hora_solicitud}. Estado: Pendiente.",
+                                ref_id
+                            ))
                 
                 cursor.execute("""
                     DELETE FROM templates_biometricos 
