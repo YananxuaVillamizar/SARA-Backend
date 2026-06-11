@@ -634,6 +634,7 @@ def get_estudiante_stats(usuario_id: str):
                 h.hora_fin,
                 h.grupo,
                 s.id AS sesion_id,
+                s.docente_asistio,
                 a.estado AS asistencia_estado
             FROM matriculas m
             JOIN asignaturas asig ON asig.id = m.asignatura_id
@@ -655,6 +656,7 @@ def get_estudiante_stats(usuario_id: str):
                 "hora_fin": str(h["hora_fin"])[:5],
                 "grupo": h["grupo"],
                 "sesion_id": h["sesion_id"],
+                "docente_asistio": h["docente_asistio"],
                 "asistencia_estado": h["asistencia_estado"]
             })
 
@@ -663,12 +665,12 @@ def get_estudiante_stats(usuario_id: str):
             for mat in matriculadas:
                 asig_list.append({
                     "nombre": mat["nombre"],
-                    "porcentaje": 100,
+                    "porcentaje": 0,
                     "dictadas": 0,
                     "asistidas": 0
                 })
             return {
-                "asistencia_general": "100%",
+                "asistencia_general": "0%",
                 "asignaturas_asistencias": asig_list,
                 "desglose_puntualidad": [
                     {"name": "A tiempo", "value": 0, "color": "#10B981"},
@@ -684,7 +686,7 @@ def get_estudiante_stats(usuario_id: str):
 
         total_sesiones = len(df)
         presentes = len(df[df["estado_norm"].isin(["Presente", "Tarde"])])
-        asistencia_acumulada_pct = f"{round((presentes / total_sesiones) * 100)}%" if total_sesiones > 0 else "100%"
+        asistencia_acumulada_pct = f"{round((presentes / total_sesiones) * 100)}%" if total_sesiones > 0 else "0%"
 
         a_tiempo = len(df[df["estado_norm"] == "Presente"])
         tarde = len(df[df["estado_norm"] == "Tarde"])
@@ -700,7 +702,7 @@ def get_estudiante_stats(usuario_id: str):
         for asig_nombre, df_asig in df.groupby("asignatura"):
             t_asig = len(df_asig)
             p_asig = len(df_asig[df_asig["estado_norm"].isin(["Presente", "Tarde"])])
-            pct_asig = round((p_asig / t_asig) * 100) if t_asig > 0 else 100
+            pct_asig = round((p_asig / t_asig) * 100) if t_asig > 0 else 0
             
             asig_map[asig_nombre] = {
                 "nombre": asig_nombre,
@@ -717,7 +719,7 @@ def get_estudiante_stats(usuario_id: str):
             else:
                 asig_list.append({
                     "nombre": nombre_materia,
-                    "porcentaje": 100,
+                    "porcentaje": 0,
                     "dictadas": 0,
                     "asistidas": 0
                 })
