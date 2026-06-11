@@ -219,10 +219,30 @@ def conciliar_sesiones_pasadas(conn):
         """)
         conn.commit()
 
-        # 2. Obtener todos los horarios
+        # 1.2 Limpiar sesiones de clase y asistencias asociadas a horarios que NO tienen ningún estudiante matriculado
         cursor.execute("""
-            SELECT id as horario_id, dia_semana, hora_inicio, hora_fin, docente_id, aula 
-            FROM horarios
+            DELETE FROM asistencias
+            WHERE horario_id NOT IN (
+                SELECT DISTINCT h.id 
+                FROM horarios h
+                JOIN matriculas m ON m.asignatura_id = h.asignatura_id AND m.grupo = h.grupo
+            )
+        """)
+        cursor.execute("""
+            DELETE FROM sesiones_clase
+            WHERE horario_id NOT IN (
+                SELECT DISTINCT h.id 
+                FROM horarios h
+                JOIN matriculas m ON m.asignatura_id = h.asignatura_id AND m.grupo = h.grupo
+            )
+        """)
+        conn.commit()
+
+        # 2. Obtener todos los horarios que tengan al menos un estudiante matriculado
+        cursor.execute("""
+            SELECT DISTINCT h.id as horario_id, h.dia_semana, h.hora_inicio, h.hora_fin, h.docente_id, h.aula 
+            FROM horarios h
+            JOIN matriculas m ON m.asignatura_id = h.asignatura_id AND m.grupo = h.grupo
         """)
         horarios = cursor.fetchall()
         if not horarios:
