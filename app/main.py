@@ -68,3 +68,11 @@ def root():
         "version": "1.0.0",
         "estado": "funcionando ✅"
     }
+
+# Endpoint de Keep-Alive para cron-job.org
+@app.get("/ping")
+def ping():
+    return {
+        "status": "alive",
+        "message": "pong"
+    }
