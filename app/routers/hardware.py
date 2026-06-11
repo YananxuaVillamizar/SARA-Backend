@@ -1547,6 +1547,11 @@ def confirm_biometric_command(request: SyncConfirmRequest):
             ref_id = f"biometric_delete_{request.comando_id}"
             
             if nuevo_estado == 'COMPLETED':
+                if cmd_info["comando"] == "DELETE":
+                    cursor.execute("""
+                        DELETE FROM templates_biometricos 
+                        WHERE usuario_id = %s
+                    """, (cmd_info["usuario_id"],))
                 titulo_act = "Eliminación de huella completada"
                 desc_afectado = f"Tu huella dactilar ({fullname}) ha sido eliminada exitosamente del lector biométrico. Solicitado el {hora_solicitud}, reportado exitoso el {hora_reporte}."
                 desc_admin = f"La huella del usuario {fullname} ({num_doc}) fue eliminada exitosamente del lector. Solicitado el {hora_solicitud}, completado el {hora_reporte}."
@@ -1564,12 +1569,12 @@ def confirm_biometric_command(request: SyncConfirmRequest):
                 WHERE ref_id = %s AND usuario_id = %s
             """, (tipo_act, titulo_act, desc_afectado, ref_id, cmd_info["usuario_id"]))
             
-            # Actualizar la notificación de los admins
+            # Actualizar la notificación de los admins (usuario_id IS NULL)
             cursor.execute("""
                 UPDATE notificaciones
                 SET tipo = %s, titulo = %s, descripcion = %s
-                WHERE ref_id = %s AND usuario_id != %s
-            """, (tipo_act, titulo_act, desc_admin, ref_id, cmd_info["usuario_id"]))
+                WHERE ref_id = %s AND usuario_id IS NULL
+            """, (tipo_act, titulo_act, desc_admin, ref_id))
         
         conn.commit()
         return {"exito": True, "mensaje": f"Comando actualizado a {nuevo_estado} y notificaciones actualizadas."}

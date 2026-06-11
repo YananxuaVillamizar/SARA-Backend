@@ -1336,12 +1336,20 @@ def obtener_alertas_usuario(usuario_id: str):
                 })
                 
         # Obtener notificaciones persistentes no limpiadas de la tabla
-        cursor.execute("""
-            SELECT id, tipo, titulo, descripcion, fecha_creacion
-            FROM notificaciones
-            WHERE usuario_id = %s AND limpiada = FALSE
-            ORDER BY fecha_creacion DESC
-        """, (usuario_id,))
+        if rol == "Administrativo":
+            cursor.execute("""
+                SELECT id, tipo, titulo, descripcion, fecha_creacion
+                FROM notificaciones
+                WHERE (usuario_id = %s OR usuario_id IS NULL) AND limpiada = FALSE
+                ORDER BY fecha_creacion DESC
+            """, (usuario_id,))
+        else:
+            cursor.execute("""
+                SELECT id, tipo, titulo, descripcion, fecha_creacion
+                FROM notificaciones
+                WHERE usuario_id = %s AND limpiada = FALSE
+                ORDER BY fecha_creacion DESC
+            """, (usuario_id,))
         persistentes = cursor.fetchall()
         for p in persistentes:
             alertas.append({
@@ -1370,11 +1378,29 @@ def limpiar_notificaciones(usuario_id: str):
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        
         cursor.execute("""
-            UPDATE notificaciones
-            SET limpiada = TRUE
-            WHERE usuario_id = %s
+            SELECT r.nombre as rol
+            FROM usuarios u
+            JOIN roles r ON r.id = u.rol_id
+            WHERE u.id = %s
         """, (usuario_id,))
+        user_row = cursor.fetchone()
+        rol = user_row["rol"] if user_row else None
+        
+        if rol == "Administrativo":
+            cursor.execute("""
+                UPDATE notificaciones
+                SET limpiada = TRUE
+                WHERE usuario_id = %s OR usuario_id IS NULL
+            """, (usuario_id,))
+        else:
+            cursor.execute("""
+                UPDATE notificaciones
+                SET limpiada = TRUE
+                WHERE usuario_id = %s
+            """, (usuario_id,))
+            
         conn.commit()
         return {"exito": True, "mensaje": "Notificaciones limpiadas con éxito"}
     except Exception as e:

@@ -113,16 +113,27 @@ def run_migrations():
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS notificaciones (
                 id UUID PRIMARY KEY,
-                usuario_id UUID NOT NULL,
+                usuario_id UUID,
+                solicitante_id UUID,
+                afectado_id UUID,
                 tipo VARCHAR(50) NOT NULL,
                 titulo VARCHAR(200) NOT NULL,
                 descripcion TEXT NOT NULL,
                 limpiada BOOLEAN DEFAULT FALSE,
                 fecha_creacion TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 ref_id VARCHAR(100),
-                CONSTRAINT fk_usuario_notificaciones FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
+                CONSTRAINT fk_usuario_notificaciones FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE,
+                CONSTRAINT fk_solicitante_notificaciones FOREIGN KEY (solicitante_id) REFERENCES usuarios(id) ON DELETE CASCADE,
+                CONSTRAINT fk_afectado_notificaciones FOREIGN KEY (afectado_id) REFERENCES usuarios(id) ON DELETE CASCADE
             );
         """)
+        conn.commit()
+
+        # 11. Actualizar tabla notificaciones existente
+        logger.info("Migración: Asegurando que usuario_id de notificaciones sea nullable y existan columnas solicitante_id/afectado_id...")
+        cursor.execute("ALTER TABLE notificaciones ALTER COLUMN usuario_id DROP NOT NULL;")
+        cursor.execute("ALTER TABLE notificaciones ADD COLUMN IF NOT EXISTS solicitante_id UUID REFERENCES usuarios(id) ON DELETE CASCADE;")
+        cursor.execute("ALTER TABLE notificaciones ADD COLUMN IF NOT EXISTS afectado_id UUID REFERENCES usuarios(id) ON DELETE CASCADE;")
         conn.commit()
 
         logger.info("¡Migraciones automáticas de base de datos SARA completadas con éxito!")

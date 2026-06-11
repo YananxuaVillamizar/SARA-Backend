@@ -41,6 +41,7 @@ class UsuarioActualizar(BaseModel):
     activo: Optional[bool] = None
     autoriza_biometria: Optional[bool] = None
     pin: Optional[str] = None
+    solicitante_id: Optional[str] = None
 
 # ── Endpoints ─────────────────────────────────────────────────
 @router.get("/")
@@ -291,39 +292,45 @@ def actualizar_usuario(num_doc: str, datos: UsuarioActualizar):
                     
                     if cmd_id:
                         ref_id = f"biometric_delete_{cmd_id}"
+                        solicitante_id = datos.solicitante_id
+                        
+                        nombre_solicitante = "el sistema"
+                        if solicitante_id:
+                            cursor.execute("SELECT nombres, apellidos FROM usuarios WHERE id = %s", (solicitante_id,))
+                            sol_row = cursor.fetchone()
+                            if sol_row:
+                                nombre_solicitante = f"{sol_row['nombres']} {sol_row['apellidos']}"
+                        
+                        if not solicitante_id or str(solicitante_id) == str(user_id):
+                            desc_afectado = f"Has solicitado la eliminación de tu huella dactilar. Operación en cola desde las {hora_solicitud}. Estado: Pendiente."
+                        else:
+                            desc_afectado = f"Se ha solicitado la eliminación de tu huella dactilar. Solicitante: {nombre_solicitante}. Operación en cola desde las {hora_solicitud}. Estado: Pendiente."
+                        
                         # 1. Notificación para el usuario afectado
                         cursor.execute("""
-                            INSERT INTO notificaciones (id, usuario_id, tipo, titulo, descripcion, ref_id)
-                            VALUES (%s, %s, 'warning', 'Eliminación de huella pendiente', %s, %s)
+                            INSERT INTO notificaciones (id, usuario_id, solicitante_id, afectado_id, tipo, titulo, descripcion, ref_id)
+                            VALUES (%s, %s, %s, %s, 'warning', 'Eliminación de huella pendiente', %s, %s)
                         """, (
                             str(uuid.uuid4()),
                             user_id,
-                            f"Se ha solicitado la eliminación de tu huella dactilar ({fullname}). Operación en cola desde las {hora_solicitud}. Estado: Pendiente.",
+                            solicitante_id,
+                            user_id,
+                            desc_afectado,
                             ref_id
                         ))
                         
-                        # 2. Notificaciones para todos los administradores
+                        # 2. Una única notificación para todos los administradores (usuario_id = NULL)
+                        desc_admin = f"Solicitud de eliminación de huella para el usuario {fullname} ({num_doc}). Solicitado por: {nombre_solicitante}. Creada el {hora_solicitud}. Estado: Pendiente."
                         cursor.execute("""
-                            SELECT u.id FROM usuarios u
-                            JOIN roles r ON r.id = u.rol_id
-                            WHERE r.nombre = 'Administrativo'
-                        """)
-                        admins = cursor.fetchall()
-                        for admin in admins:
-                            cursor.execute("""
-                                INSERT INTO notificaciones (id, usuario_id, tipo, titulo, descripcion, ref_id)
-                                VALUES (%s, %s, 'warning', 'Eliminación de huella pendiente', %s, %s)
-                            """, (
-                                str(uuid.uuid4()),
-                                admin["id"],
-                                f"Solicitud de eliminación de huella para el usuario {fullname} ({num_doc}). Creada el {hora_solicitud}. Estado: Pendiente.",
-                                ref_id
-                            ))
-                
-                cursor.execute("""
-                    DELETE FROM templates_biometricos 
-                    WHERE usuario_id = (SELECT id FROM usuarios WHERE num_doc = %s)
-                """, (num_doc,))
+                            INSERT INTO notificaciones (id, usuario_id, solicitante_id, afectado_id, tipo, titulo, descripcion, ref_id)
+                            VALUES (%s, NULL, %s, %s, 'warning', 'Eliminación de huella pendiente', %s, %s)
+                        """, (
+                            str(uuid.uuid4()),
+                            solicitante_id,
+                            user_id,
+                            desc_admin,
+                            ref_id
+                        ))
 
         # Si no hay campos para la tabla usuarios, pero se actualizó el PIN, es válido
         if not campos and datos.pin is None:
