@@ -27,7 +27,9 @@ def auto_cerrar_sesiones_abiertas(conn):
         
         for sess in open_sessions:
             s_date = sess["fecha"]
-            if isinstance(s_date, str):
+            if isinstance(s_date, datetime):
+                s_date = s_date.date()
+            elif isinstance(s_date, str):
                 s_date = datetime.strptime(s_date[:10], "%Y-%m-%d").date()
             
             tipo_sesion = (sess.get("tipo") or "ordinaria").lower().strip()
@@ -170,14 +172,40 @@ def conciliar_sesiones_pasadas(conn):
         fecha_inicio = sem["fecha_inicio"]
         fecha_fin = sem["fecha_fin"]
         
-        # Convertir a objetos date si vienen como string
+        # Convertir a objetos date si vienen como string o datetime
         if isinstance(fecha_inicio, str):
             fecha_inicio = datetime.strptime(fecha_inicio[:10], "%Y-%m-%d").date()
+        elif isinstance(fecha_inicio, datetime):
+            fecha_inicio = fecha_inicio.date()
+            
         if isinstance(fecha_fin, str):
             fecha_fin = datetime.strptime(fecha_fin[:10], "%Y-%m-%d").date()
+        elif isinstance(fecha_fin, datetime):
+            fecha_fin = fecha_fin.date()
             
         today = datetime.now(timezone(timedelta(hours=-5))).date()
         limite_fecha = min(fecha_fin, today)
+
+        # 1.0 Eliminar registros duplicados de inasistencia/no_completada que se hayan podido crear por bugs de tipo de fecha
+        cursor.execute("""
+            DELETE FROM asistencias a1
+            USING asistencias a2
+            WHERE a1.id > a2.id
+              AND a1.sesion_id = a2.sesion_id
+              AND a1.usuario_id = a2.usuario_id
+              AND a1.estado = 'inasistencia'
+              AND a2.estado = 'inasistencia'
+        """)
+        cursor.execute("""
+            DELETE FROM sesiones_clase s1
+            USING sesiones_clase s2
+            WHERE s1.id > s2.id
+              AND s1.horario_id = s2.horario_id
+              AND s1.fecha = s2.fecha
+              AND s1.estado = 'no_completada'
+              AND s2.estado = 'no_completada'
+        """)
+        conn.commit()
         
         # 1.1 Limpiar registros de inasistencias de estudiantes para fechas previas a su matrícula
         cursor.execute("""
@@ -213,7 +241,9 @@ def conciliar_sesiones_pasadas(conn):
         for s in sesiones_db:
             h_id = str(s["horario_id"])
             f = s["fecha"]
-            if isinstance(f, str):
+            if isinstance(f, datetime):
+                f = f.date()
+            elif isinstance(f, str):
                 f = datetime.strptime(f[:10], "%Y-%m-%d").date()
             sesiones_existentes.add((h_id, f))
             lunes_semana = f - timedelta(days=f.weekday())
