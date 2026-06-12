@@ -44,10 +44,23 @@ async def periodic_reconciliation():
             print(f"[BACKGROUND TASK ERROR] Error in periodic_reconciliation: {e}")
         await asyncio.sleep(300) # Every 5 minutes
 
+async def startup_tasks():
+    try:
+        print("[STARTUP] Ejecutando migraciones de base de datos en segundo plano...")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, run_migrations)
+        print("[STARTUP] Migraciones de base de datos completadas.")
+    except Exception as e:
+        print(f"[STARTUP ERROR] Error al ejecutar migraciones en segundo plano: {e}")
+    
+    # Iniciar la reconciliación periódica una vez completadas las migraciones
+    asyncio.create_task(periodic_reconciliation())
+
 @app.on_event("startup")
 def startup_event():
-    run_migrations()
-    asyncio.create_task(periodic_reconciliation())
+    # Programamos las tareas de inicio en segundo plano
+    # Esto permite que FastAPI comience a escuchar peticiones inmediatamente y responda a /ping
+    asyncio.create_task(startup_tasks())
 
 # Registrar los routers — son como las secciones del menú del restaurante
 # Cada router agrupa endpoints relacionados
