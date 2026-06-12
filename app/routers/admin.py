@@ -518,6 +518,17 @@ def actualizar_horario(horario_id: str, datos: HorarioCrear, force: Optional[boo
             else:
                 # Si force=True, eliminar las matrículas de los estudiantes afectados
                 for student in conflicting_students:
+                    # Primero eliminar los registros de asistencia de esa asignatura y grupo
+                    cursor.execute("""
+                        DELETE FROM asistencias 
+                        WHERE usuario_id = %s 
+                          AND horario_id IN (
+                              SELECT id FROM horarios 
+                              WHERE asignatura_id = %s AND grupo = %s
+                          )
+                    """, (student["id"], h_info["asignatura_id"], h_info["grupo"]))
+
+                    # Luego eliminar la matrícula
                     cursor.execute("""
                         DELETE FROM matriculas 
                         WHERE usuario_id = %s AND asignatura_id = %s AND grupo = %s

@@ -213,8 +213,29 @@ def eliminar_matricula(matricula_id: str):
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        
+        # 1. Obtener usuario_id, asignatura_id y grupo de la matrícula antes de borrarla
+        cursor.execute("""
+            SELECT usuario_id, asignatura_id, grupo FROM matriculas WHERE id = %s
+        """, (matricula_id,))
+        m_info = cursor.fetchone()
+        if not m_info:
+            raise HTTPException(status_code=404, detail="Matrícula no encontrada")
+            
+        # 2. Eliminar las asistencias del estudiante para los horarios de esa asignatura y grupo
+        cursor.execute("""
+            DELETE FROM asistencias 
+            WHERE usuario_id = %s 
+              AND horario_id IN (
+                  SELECT id FROM horarios 
+                  WHERE asignatura_id = %s AND grupo = %s
+              )
+        """, (m_info["usuario_id"], m_info["asignatura_id"], m_info["grupo"]))
+        
+        # 3. Eliminar la matrícula
         cursor.execute("DELETE FROM matriculas WHERE id = %s RETURNING id", (matricula_id,))
         conn.commit()
+        
         if not cursor.fetchone():
             raise HTTPException(status_code=404, detail="Matrícula no encontrada")
         return {"mensaje": "Matrícula eliminada"}
