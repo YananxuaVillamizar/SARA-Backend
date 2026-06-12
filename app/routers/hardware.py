@@ -1522,7 +1522,7 @@ def confirm_biometric_command(request: SyncConfirmRequest):
         cursor.execute("""
             SELECT b.usuario_id, b.comando, u.nombres, u.apellidos, u.num_doc, b.fecha_creacion
             FROM biometric_pending_commands b
-            JOIN usuarios u ON u.id = b.usuario_id
+            JOIN usuarios u ON u.id = b.usuario_id::uuid
             WHERE b.id = %s
         """, (request.comando_id,))
         cmd_info = cursor.fetchone()
