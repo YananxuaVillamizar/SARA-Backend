@@ -87,6 +87,11 @@ class VerificacionPinDocenteRequest(BaseModel):
 class ObtenerUsuarioDocentePorSesionRequest(BaseModel):
     sesion_id: str
 
+class MetodoEntradaDocenteRequest(BaseModel):
+    sesion_id: str
+    num_doc: str
+    
+
 def obtener_siguiente_id_disponible():
     """
     Obtiene el siguiente ID disponible en la tabla templates_biometricos
@@ -483,6 +488,60 @@ def registrar_asistencia_docente(request: RegistroAsistenciaDocente):
         if conn:
             conn.rollback()
         return {"exito": False, "detail": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+@router.post("/docente/metodo-entrada-por-sesion")
+def obtener_metodo_entrada_docente_por_sesion(request: MetodoEntradaDocenteRequest):
+    """
+    Obtiene el método de verificación usado en entrada para una sesión de docente.
+    Busca el registro de asistencia sin salida (entrada) para la sesión.
+    """
+    sesion_id = request.get("sesion_id")
+    num_doc = request.get("num_doc")
+    
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Obtener usuario_id
+        cursor.execute(
+            "SELECT id FROM usuarios WHERE num_doc = %s",
+            (num_doc,)
+        )
+        resultado_usuario = cursor.fetchone()
+        
+        if not resultado_usuario:
+            return {"existe": False}
+        
+        usuario_id = resultado_usuario['id']
+        
+        # Buscar el registro de entrada (sin salida) de este docente en esta sesión
+        cursor.execute("""
+            SELECT metodo_verificacion
+            FROM asistencias
+            WHERE sesion_id = %s
+              AND usuario_id = %s
+              AND hora_entrada IS NOT NULL
+              AND hora_salida IS NULL
+            LIMIT 1;
+        """, (sesion_id, usuario_id))
+        
+        resultado = cursor.fetchone()
+        
+        if not resultado:
+            return {"existe": False}
+        
+        return {
+            "existe": True,
+            "metodo_verificacion": resultado['metodo_verificacion']
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] en obtener_metodo_entrada_docente_por_sesion: {str(e)}")
+        return {"existe": False, "error": str(e)}
     finally:
         if conn:
             conn.close()
