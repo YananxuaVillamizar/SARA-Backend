@@ -92,6 +92,11 @@ class MetodoEntradaDocenteRequest(BaseModel):
     sesion_id: str
     num_doc: str
     
+class ValidarSesionDisponibleRequest(BaseModel):
+    horario_id: str
+    fecha: str
+    num_doc: str
+
 
 def obtener_siguiente_id_disponible():
     """
@@ -554,6 +559,47 @@ def obtener_metodo_entrada_docente_por_sesion(request: MetodoEntradaDocenteReque
     except Exception as e:
         print(f"[ERROR] en obtener_metodo_entrada_docente_por_sesion: {str(e)}")
         return {"existe": False, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+@router.post("/docente/validar-sesion-disponible")
+def validar_sesion_disponible(request: ValidarSesionDisponibleRequest):
+    """
+    Valida si se puede abrir una nueva sesión con este horario en esta fecha
+    """
+    horario_id = request.horario_id
+    fecha = request.fecha
+    num_doc = request.num_doc
+    
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id FROM usuarios WHERE num_doc = %s
+        """, (num_doc,))
+        usuario = cursor.fetchone()
+        
+        if not usuario:
+            return {"disponible": False, "razon": "Usuario no encontrado"}
+        
+        cursor.execute("""
+            SELECT id FROM sesiones_clase
+            WHERE horario_id = %s AND fecha = %s AND estado IN ('abierta', 'completa')
+        """, (horario_id, fecha))
+        
+        sesion = cursor.fetchone()
+        
+        if sesion:
+            return {"disponible": False, "razon": "Esta clase está en curso o ya se ha terminado. No puedes realizar la misma clase 2 veces el mismo día."}
+        
+        return {"disponible": True}
+        
+    except Exception as e:
+        print(f"[ERROR] en validar_sesion_disponible: {str(e)}")
+        return {"disponible": False, "razon": str(e)}
     finally:
         if conn:
             conn.close()
