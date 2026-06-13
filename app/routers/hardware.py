@@ -498,8 +498,8 @@ def obtener_metodo_entrada_docente_por_sesion(request: MetodoEntradaDocenteReque
     Obtiene el método de verificación usado en entrada para una sesión de docente.
     Busca el registro de asistencia sin salida (entrada) para la sesión.
     """
-    sesion_id = request.get("sesion_id")
-    num_doc = request.get("num_doc")
+    sesion_id = request.sesion_id
+    num_doc = request.num_doc
     
     conn = None
     try:
