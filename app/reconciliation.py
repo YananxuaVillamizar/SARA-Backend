@@ -238,6 +238,72 @@ def conciliar_sesiones_pasadas(conn):
         """)
         conn.commit()
 
+        # 1.3 Limpiar sesiones no completadas de hoy que ya no son válidas por cambio de horario
+        # Ocurre si la sesión tiene estado = 'no_completada' y fecha = today, pero bajo el nuevo horario:
+        #   - El día de la semana programado es diferente de hoy.
+        #   - O el día de la semana es hoy, pero la hora de fin es futura (hora_fin >= current_time),
+        #     lo que significa que la clase está en curso o por iniciar.
+        # En estos casos, eliminamos la sesión y sus asistencias para que el nuevo horario tenga efecto desde hoy.
+        dias_es_map = {0: "lunes", 1: "martes", 2: "miercoles", 3: "jueves", 4: "viernes", 5: "sabado", 6: "domingo"}
+        now_col = datetime.now(timezone(timedelta(hours=-5)))
+        dia_hoy = dias_es_map[now_col.weekday()]
+        current_time_col = now_col.time()
+
+        cursor.execute("""
+            SELECT id, horario_id 
+            FROM sesiones_clase 
+            WHERE fecha = %s AND estado = 'no_completada'
+        """, (today,))
+        sesiones_no_comp_hoy = cursor.fetchall()
+
+        for s_row in sesiones_no_comp_hoy:
+            s_id = s_row["id"]
+            h_id = s_row["horario_id"]
+
+            cursor.execute("""
+                SELECT dia_semana, hora_fin 
+                FROM horarios 
+                WHERE id = %s
+            """, (h_id,))
+            h_row = cursor.fetchone()
+
+            if not h_row:
+                # El horario ya no existe, borrar sesión huérfana
+                cursor.execute("DELETE FROM asistencias WHERE sesion_id = %s", (s_id,))
+                cursor.execute("DELETE FROM sesiones_clase WHERE id = %s", (s_id,))
+                continue
+
+            dia_sem_horario = h_row["dia_semana"].lower().strip()
+            hora_fin_val = h_row["hora_fin"]
+
+            # Convertir hora_fin a objeto time
+            if isinstance(hora_fin_val, str):
+                try:
+                    hora_fin = datetime.strptime(hora_fin_val[:5], "%H:%M").time()
+                except:
+                    hora_fin = time(23, 59)
+            elif hasattr(hora_fin_val, "hour"):
+                hora_fin = hora_fin_val
+            elif hora_fin_val is not None:
+                total_sec = int(hora_fin_val.total_seconds())
+                hora_fin = time(total_sec // 3600, (total_sec % 3600) // 60)
+            else:
+                hora_fin = time(23, 59)
+
+            dia_sem_horario_norm = dia_sem_horario.replace("miercoles", "miércoles").replace("sabado", "sábado")
+            dia_hoy_norm = dia_hoy.replace("miercoles", "miércoles").replace("sabado", "sábado")
+
+            es_dia_diferente = (dia_sem_horario_norm != dia_hoy_norm)
+            es_futuro_o_progreso = (not es_dia_diferente and current_time_col <= hora_fin)
+
+            if es_dia_diferente or es_futuro_o_progreso:
+                print(f"[RECONCILIACIÓN] Eliminando sesión 'no_completada' obsoleta {s_id} (horario {h_id}) para dar efecto al nuevo horario desde hoy.")
+                cursor.execute("DELETE FROM asistencias WHERE sesion_id = %s", (s_id,))
+                cursor.execute("DELETE FROM sesiones_clase WHERE id = %s", (s_id,))
+                
+        conn.commit()
+
+
         # 2. Obtener todos los horarios que tengan al menos un estudiante matriculado
         cursor.execute("""
             SELECT DISTINCT h.id as horario_id, h.dia_semana, h.hora_inicio, h.hora_fin, h.docente_id, h.aula 
