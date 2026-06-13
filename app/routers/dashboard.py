@@ -634,14 +634,17 @@ def get_estudiante_stats(usuario_id: str):
                 h.hora_fin,
                 h.grupo,
                 s.id AS sesion_id,
+                s.estado AS sesion_estado,
                 s.docente_asistio,
-                a.estado AS asistencia_estado
+                a.estado AS asistencia_estado,
+                a.hora_entrada,
+                a.hora_salida
             FROM matriculas m
             JOIN asignaturas asig ON asig.id = m.asignatura_id
             JOIN horarios h ON h.asignatura_id = asig.id AND h.grupo = m.grupo
             LEFT JOIN sesiones_clase s ON s.horario_id = h.id AND s.fecha = CURRENT_DATE
             LEFT JOIN asistencias a ON a.usuario_id = m.usuario_id AND a.sesion_id = s.id
-            WHERE m.usuario_id = %s AND LOWER(h.dia_semana) = %s
+            WHERE m.usuario_id = %s AND m.estado = 'activa' AND LOWER(h.dia_semana) = %s
         """, (usuario_id, dia_hoy))
         horarios_hoy = cursor.fetchall()
 
@@ -656,8 +659,11 @@ def get_estudiante_stats(usuario_id: str):
                 "hora_fin": str(h["hora_fin"])[:5],
                 "grupo": h["grupo"],
                 "sesion_id": h["sesion_id"],
+                "sesion_estado": h["sesion_estado"],
                 "docente_asistio": h["docente_asistio"],
-                "asistencia_estado": h["asistencia_estado"]
+                "asistencia_estado": h["asistencia_estado"],
+                "hora_entrada": h["hora_entrada"].isoformat() if hasattr(h["hora_entrada"], "isoformat") else (str(h["hora_entrada"]) if h["hora_entrada"] else None),
+                "hora_salida": h["hora_salida"].isoformat() if hasattr(h["hora_salida"], "isoformat") else (str(h["hora_salida"]) if h["hora_salida"] else None)
             })
 
         if not clases_raw:
