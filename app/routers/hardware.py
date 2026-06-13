@@ -30,6 +30,7 @@ class RegistroAsistenciaDocente(BaseModel):
     hora: str   # HH:MM:SS
     aula: str
     tipo_sesion: str  # 'ordinaria' o 'extraordinaria'
+    metodo_verificacion: str  # ★ NUEVO: 'Biometría' o 'PIN'
 
 class ObtenerDocenteSesion(BaseModel):
     sesion_id: str
@@ -397,6 +398,7 @@ def registrar_asistencia_docente(request: RegistroAsistenciaDocente):
     hora = request.hora
     aula = request.aula
     tipo_sesion = request.tipo_sesion.lower()
+    metodo_verificacion = request.metodo_verificacion  # ★ NUEVO
 
     conn = None
     try:
@@ -426,7 +428,7 @@ def registrar_asistencia_docente(request: RegistroAsistenciaDocente):
 
         hora_inicio = horario['hora_inicio']
 
-        # Verificar si ya existe sesión abierta
+        # ★ VERIFICAR SI YA EXISTE SESIÓN ABIERTA PARA CUALQUIER HORARIO
         cursor.execute("""
             SELECT id FROM sesiones_clase
             WHERE creado_por = %s AND fecha = %s AND estado = 'abierta'
@@ -443,9 +445,9 @@ def registrar_asistencia_docente(request: RegistroAsistenciaDocente):
 
             cursor.execute("""
                 UPDATE asistencias
-                SET hora_salida = %s, estado = 'presente'
+                SET hora_salida = %s, estado = 'presente', metodo_verificacion = %s
                 WHERE sesion_id = %s AND usuario_id = %s AND hora_entrada IS NOT NULL
-            """, (fecha_hora_timestamp, sesion_id, usuario_id))
+            """, (fecha_hora_timestamp, metodo_verificacion, sesion_id, usuario_id))
 
             # Actualizar sesión
             from datetime import datetime
@@ -467,6 +469,16 @@ def registrar_asistencia_docente(request: RegistroAsistenciaDocente):
 
         else:
             # ★ REGISTRAR ENTRADA (CREAR SESIÓN)
+            # ★ VALIDAR QUE NO EXISTA OTRA SESIÓN CON MISMO horario_id Y fecha
+            cursor.execute("""
+                SELECT id FROM sesiones_clase
+                WHERE horario_id = %s AND fecha = %s AND estado IN ('abierta', 'completa')
+            """, (horario_id, fecha))
+            
+            sesion_duplicada = cursor.fetchone()
+            
+            if sesion_duplicada:
+                return {"exito": False, "detail": "Esta clase está en curso o ya se ha terminado. No puedes realizar la misma clase 2 veces el mismo día."}
             import uuid
             sesion_id = str(uuid.uuid4())
 
@@ -477,8 +489,8 @@ def registrar_asistencia_docente(request: RegistroAsistenciaDocente):
 
             cursor.execute("""
                 INSERT INTO asistencias (id, horario_id, usuario_id, hora_entrada, metodo_verificacion, estado, aula, fecha, sesion_id)
-                VALUES (%s, %s, %s, %s, 'Biometría', 'inasistencia', %s, %s, %s)
-            """, (str(uuid.uuid4()), horario_id, usuario_id, fecha_hora_timestamp, aula, fecha, sesion_id))
+                VALUES (%s, %s, %s, %s, %s, 'inasistencia', %s, %s, %s)
+            """, (str(uuid.uuid4()), horario_id, usuario_id, fecha_hora_timestamp, metodo_verificacion, aula, fecha, sesion_id))
 
             conn.commit()
             return {"exito": True, "mensaje": "Entrada registrada correctamente"}
