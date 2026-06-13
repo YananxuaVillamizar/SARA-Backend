@@ -746,6 +746,81 @@ def get_estudiante_stats(usuario_id: str):
         if conn:
             conn.close()
 
+@router.get("/docente-stats/{usuario_id}")
+def get_docente_stats(usuario_id: str):
+    """
+    Retorna las estadísticas del dashboard del docente (sus clases de hoy y semestre activo).
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        
+        # Ejecutar la conciliación automática bajo demanda
+        conciliar_sesiones_pasadas(conn)
+        
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT id, nombre FROM semestres WHERE activo = TRUE LIMIT 1")
+        sem_row = cursor.fetchone()
+        nombre_semestre = sem_row["nombre"] if sem_row else "Sin Semestre Activo"
+
+        now = datetime.now(timezone(timedelta(hours=-5)))
+        dias_es_map = {0: "lunes", 1: "martes", 2: "miercoles", 3: "jueves", 4: "viernes", 5: "sabado", 6: "domingo"}
+        dia_hoy = dias_es_map[now.weekday()]
+
+        cursor.execute("""
+            SELECT 
+                h.id,
+                asig.nombre AS asignatura,
+                h.aula,
+                h.hora_inicio,
+                h.hora_fin,
+                h.grupo,
+                s.id AS sesion_id,
+                s.estado AS sesion_estado,
+                s.docente_asistio,
+                a.estado AS asistencia_estado,
+                a.hora_entrada,
+                a.hora_salida
+            FROM horarios h
+            JOIN asignaturas asig ON asig.id = h.asignatura_id
+            LEFT JOIN sesiones_clase s ON s.horario_id = h.id AND s.fecha = CURRENT_DATE
+            LEFT JOIN asistencias a ON a.usuario_id = h.docente_id AND a.sesion_id = s.id
+            WHERE h.docente_id = %s AND LOWER(h.dia_semana) = %s
+        """, (usuario_id, dia_hoy))
+        horarios_hoy = cursor.fetchall()
+
+        horarios_hoy_list = []
+        for h in horarios_hoy:
+            horarios_hoy_list.append({
+                "id": h["id"],
+                "asignatura": h["asignatura"],
+                "aula": h["aula"],
+                "dia_semana": dia_hoy.capitalize(),
+                "hora_inicio": str(h["hora_inicio"])[:5],
+                "hora_fin": str(h["hora_fin"])[:5],
+                "grupo": h["grupo"],
+                "sesion_id": h["sesion_id"],
+                "sesion_estado": h["sesion_estado"],
+                "docente_asistio": h["docente_asistio"],
+                "asistencia_estado": h["asistencia_estado"],
+                "hora_entrada": h["hora_entrada"].isoformat() if hasattr(h["hora_entrada"], "isoformat") else (str(h["hora_entrada"]) if h["hora_entrada"] else None),
+                "hora_salida": h["hora_salida"].isoformat() if hasattr(h["hora_salida"], "isoformat") else (str(h["hora_salida"]) if h["hora_salida"] else None)
+            })
+
+        return {
+            "horarios_hoy": horarios_hoy_list,
+            "semestre_actual": nombre_semestre
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            conn.close()
+
 # ── Endpoints y Helpers para Gráfica de Permanencia Detallada ────────────────
 
 from datetime import time
