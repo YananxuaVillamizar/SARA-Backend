@@ -42,6 +42,15 @@ def run_migrations():
 
         # 5. Actualizar la restricción CHECK en metodo_verificacion
         cursor.execute("ALTER TABLE asistencias DROP CONSTRAINT IF EXISTS check_metodo_verificacion;")
+        
+        # Limpiar cualquier valor heredado que no cumpla con la restricción antes de crearla
+        cursor.execute("""
+            UPDATE asistencias 
+            SET metodo_verificacion = NULL 
+            WHERE metodo_verificacion NOT IN ('Biometría', 'Firma Electrónica', 'Supervisado')
+              AND metodo_verificacion IS NOT NULL;
+        """)
+        
         cursor.execute("""
             ALTER TABLE asistencias 
             ADD CONSTRAINT check_metodo_verificacion 
