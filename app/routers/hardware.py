@@ -153,7 +153,7 @@ def obtener_dia_semana(fecha_str: str) -> str:
 @router.post("/usuario/buscar")
 def buscar_usuario(request: BuscarUsuarioRequest):
     """
-    FLUJO REGISTRO Y VERIFICACIÓN: El ESP32 pregunta si existe el usuario
+    El ESP32 pregunta si existe el usuario
     
     Retorna:
     {
@@ -185,15 +185,8 @@ def buscar_usuario(request: BuscarUsuarioRequest):
                 "mensaje": "Usuario no encontrado"
             }
         
-        # Verificar estado del usuario
+        # ★ VERIFICAR ESTADO
         activo = usuario['activo']
-        autoriza = usuario['autoriza_biometria']
-        
-        if not activo and not autoriza:
-            return {
-                "existe": False,
-                "mensaje": "Este usuario no se encuentra activo ni autoriza biometria"
-            }
         
         if not activo:
             return {
@@ -201,14 +194,7 @@ def buscar_usuario(request: BuscarUsuarioRequest):
                 "mensaje": "Este usuario no se encuentra activo"
             }
         
-        return {
-            "existe": True,
-            "id": usuario['id'],
-            "nombre_completo": nombre_completo,
-            "rol": usuario['rol'],
-            "autoriza_biometria": usuario['autoriza_biometria']
-        }
-        
+        # ★ USUARIO EXISTE Y ESTÁ ACTIVO - RETORNAR DATOS
         nombre_completo = f"{usuario['nombres']} {usuario['apellidos']}"
         
         return {
@@ -220,11 +206,12 @@ def buscar_usuario(request: BuscarUsuarioRequest):
         }
         
     except Exception as e:
+        print(f"[ERROR] en buscar_usuario: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:
             conn.close()
-
+            
 @router.get("/sensor/id-disponible")
 def obtener_id_disponible():
     """
