@@ -647,6 +647,7 @@ def registrar_asistencia_estudiante_con_metodo(request: RegistroAsistenciaEstudi
     """
     Registra asistencia de estudiante con método especificado (Biométrico o Supervisado)
     """
+    print(f"[DEBUG] Registro estudiante: num_doc={request.num_doc}, horario_id={request.horario_id}, fecha={request.fecha}, hora={request.hora}, tipo={request.tipo}")
     conn = None
     try:
         conn = get_connection()
@@ -660,14 +661,16 @@ def registrar_asistencia_estudiante_con_metodo(request: RegistroAsistenciaEstudi
         
         usuario: Any = cursor.fetchone()
         if usuario is None:
+            print(f"[ERROR] Estudiante no encontrado: {request.num_doc}")
             raise HTTPException(status_code=404, detail="Usuario no encontrado")
         
         usuario_id = usuario['id']
+        print(f"[DEBUG] usuario_id={usuario_id}")
         timestamp_evento = f"{request.fecha} {request.hora}"
         
-        # Buscar sesión abierta
+        # Buscar sesión para este horario en esta fecha (abierta o completa)
         cursor.execute("""
-            SELECT id, aula
+            SELECT id, aula, estado
             FROM sesiones_clase
             WHERE horario_id = %s AND fecha = %s
             LIMIT 1
@@ -676,6 +679,7 @@ def registrar_asistencia_estudiante_con_metodo(request: RegistroAsistenciaEstudi
         sesion: Any = cursor.fetchone()
         
         if not sesion:
+            print(f"[ERROR] No hay sesión para horario_id={request.horario_id} en fecha={request.fecha}")
             raise HTTPException(
                 status_code=403,
                 detail="No hay sesión para este horario en esta fecha"
@@ -683,18 +687,16 @@ def registrar_asistencia_estudiante_con_metodo(request: RegistroAsistenciaEstudi
         
         sesion_id = sesion['id']
         aula = sesion['aula']
+        estado_sesion = sesion['estado']
+        print(f"[DEBUG] Sesión encontrada: sesion_id={sesion_id}, estado={estado_sesion}")
         
-        cursor.execute("""
-            SELECT estado FROM sesiones_clase
-            WHERE id = %s
-        """, (sesion_id,))
-        
-        sesion_estado: Any = cursor.fetchone()
-        
-        if sesion_estado['estado'] != 'abierta':
+        # Permitir registro si la sesión está abierta O ya fue completada por el docente
+        # (el docente puede cerrar antes de que todos los estudiantes escaneen)
+        if estado_sesion not in ('abierta', 'completa'):
+            print(f"[ERROR] Sesión en estado inválido para registro: {estado_sesion}")
             raise HTTPException(
                 status_code=403,
-                detail="La sesión no está abierta"
+                detail=f"La sesión no acepta registros en su estado actual: {estado_sesion}"
             )
         
         # Buscar registro previo
@@ -833,7 +835,7 @@ def verificar_sesiones_docente(request: dict):
         conn = get_connection()
         cursor = conn.cursor()
         
-        print(f"[DEBUG] Verificando sesiones abiertas para {num_doc} en {fecha}")
+        print(f"[DEBUG] Verificando sesiones activas para {num_doc} en {fecha}")
         
         # Obtener usuario_id (docente)
         cursor.execute(
@@ -847,12 +849,14 @@ def verificar_sesiones_docente(request: dict):
         
         usuario_id = resultado_usuario['id']
         
-        # Query que obtiene la sesión abierta CON TODA LA INFORMACIÓN
+        # Incluir sesiones 'abierta' Y 'completa' — el docente puede cerrar antes de
+        # que todos los estudiantes escaneen, pero la sesión aún acepta registros
         query = """
         SELECT 
             s.id as sesion_id,
             h.id as horario_id,
             s.aula,
+            s.estado,
             a.nombre as asignatura_nombre,
             a.codigo as asignatura_codigo,
             h.grupo,
@@ -863,7 +867,8 @@ def verificar_sesiones_docente(request: dict):
         JOIN asignaturas a ON h.asignatura_id = a.id
         WHERE s.creado_por = %s
           AND s.fecha = %s
-          AND s.estado = 'abierta'
+          AND s.estado IN ('abierta', 'completa')
+        ORDER BY CASE s.estado WHEN 'abierta' THEN 0 ELSE 1 END
         LIMIT 1;
         """
         
@@ -871,15 +876,16 @@ def verificar_sesiones_docente(request: dict):
         sesion = cursor.fetchone()
         
         if not sesion:
-            print("[DEBUG] No hay sesiones abiertas")
+            print("[DEBUG] No hay sesiones activas o recientes")
             return {"hay_sesiones": False}
         
-        print(f"[DEBUG] Sesión abierta encontrada: {sesion['sesion_id']}")
+        print(f"[DEBUG] Sesión encontrada: {sesion['sesion_id']} (estado={sesion['estado']})")
         return {
             "hay_sesiones": True,
             "sesion_id": str(sesion['sesion_id']),
             "horario_id": str(sesion['horario_id']),
             "aula": sesion['aula'],
+            "estado": sesion['estado'],
             "asignatura_nombre": sesion['asignatura_nombre'],
             "asignatura_codigo": sesion['asignatura_codigo'],
             "grupo": sesion['grupo'],
