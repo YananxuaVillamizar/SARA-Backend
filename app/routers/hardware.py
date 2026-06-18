@@ -407,13 +407,13 @@ def registrar_asistencia_docente(request: RegistroAsistenciaDocente):
     metodo_raw = request.metodo_verificacion or ""
     met_lower = metodo_raw.lower()
     if "pin" in met_lower:
-        metodo_verificacion = "Firma Electrónica"
+        metodo_verificacion = "PIN docente"
     elif "huella" in met_lower or "biomet" in met_lower:
         metodo_verificacion = "Biometría"
     elif "supervis" in met_lower:
         metodo_verificacion = "Supervisado"
     else:
-        metodo_verificacion = "Firma Electrónica"
+        metodo_verificacion = "PIN docente"
 
     conn = None
     try:
@@ -662,13 +662,13 @@ def registrar_asistencia_estudiante_con_metodo(request: RegistroAsistenciaEstudi
     metodo_raw = request.metodo_verificacion or ""
     met_lower = metodo_raw.lower()
     if "pin" in met_lower:
-        metodo_verificacion = "Firma Electrónica"
+        metodo_verificacion = "Supervisado"
     elif "huella" in met_lower or "biomet" in met_lower:
         metodo_verificacion = "Biometría"
     elif "supervis" in met_lower:
         metodo_verificacion = "Supervisado"
     else:
-        metodo_verificacion = "Firma Electrónica"
+        metodo_verificacion = "Supervisado"
 
     conn = None
     try:

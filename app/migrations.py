@@ -47,14 +47,14 @@ def run_migrations():
         cursor.execute("""
             UPDATE asistencias 
             SET metodo_verificacion = NULL 
-            WHERE metodo_verificacion NOT IN ('Biometría', 'Firma Electrónica', 'Supervisado')
+            WHERE metodo_verificacion NOT IN ('Biometría', 'Firma Electrónica', 'Supervisado', 'PIN docente')
               AND metodo_verificacion IS NOT NULL;
         """)
         
         cursor.execute("""
             ALTER TABLE asistencias 
             ADD CONSTRAINT check_metodo_verificacion 
-            CHECK (metodo_verificacion IS NULL OR metodo_verificacion IN ('Biometría', 'Firma Electrónica', 'Supervisado'));
+            CHECK (metodo_verificacion IS NULL OR metodo_verificacion IN ('Biometría', 'Firma Electrónica', 'Supervisado', 'PIN docente'));
         """)
         conn.commit()
 
