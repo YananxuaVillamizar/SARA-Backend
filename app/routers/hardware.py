@@ -694,7 +694,7 @@ def registrar_asistencia_estudiante_con_metodo(request: RegistroAsistenciaEstudi
         cursor.execute("""
             SELECT id, aula, estado
             FROM sesiones_clase
-            WHERE horario_id = %s AND fecha = %s AND estado IN ('abierta', 'completa')
+            WHERE horario_id = %s AND fecha = %s AND estado = 'abierta'
             ORDER BY CASE estado WHEN 'abierta' THEN 0 ELSE 1 END
             LIMIT 1
         """, (request.horario_id, request.fecha))
@@ -712,10 +712,8 @@ def registrar_asistencia_estudiante_con_metodo(request: RegistroAsistenciaEstudi
         aula = sesion['aula']
         estado_sesion = sesion['estado']
         print(f"[DEBUG] Sesión encontrada: sesion_id={sesion_id}, estado={estado_sesion}")
-        
-        # Permitir registro si la sesión está abierta O ya fue completada por el docente
-        # (el docente puede cerrar antes de que todos los estudiantes escaneen)
-        if estado_sesion not in ('abierta', 'completa'):
+    
+        if estado_sesion not in ('abierta'):
             print(f"[ERROR] Sesión en estado inválido para registro: {estado_sesion}")
             raise HTTPException(
                 status_code=403,
@@ -872,8 +870,6 @@ def verificar_sesiones_docente(request: dict):
         
         usuario_id = resultado_usuario['id']
         
-        # Incluir sesiones 'abierta' Y 'completa' — el docente puede cerrar antes de
-        # que todos los estudiantes escaneen, pero la sesión aún acepta registros
         query = """
         SELECT 
             s.id as sesion_id,
@@ -889,8 +885,8 @@ def verificar_sesiones_docente(request: dict):
         JOIN horarios h ON s.horario_id = h.id
         JOIN asignaturas a ON h.asignatura_id = a.id
         WHERE s.creado_por = %s
-          AND s.fecha = %s
-          AND s.estado IN ('abierta', 'completa')
+        AND s.fecha = %s
+        AND s.estado = 'abierta'
         ORDER BY CASE s.estado WHEN 'abierta' THEN 0 ELSE 1 END
         LIMIT 1;
         """
