@@ -403,7 +403,17 @@ def registrar_asistencia_docente(request: RegistroAsistenciaDocente):
     hora = request.hora
     aula = request.aula
     tipo_sesion = request.tipo_sesion.lower()
-    metodo_verificacion = request.metodo_verificacion  # ★ NUEVO
+    
+    metodo_raw = request.metodo_verificacion or ""
+    met_lower = metodo_raw.lower()
+    if "pin" in met_lower:
+        metodo_verificacion = "Firma Electrónica"
+    elif "huella" in met_lower or "biomet" in met_lower:
+        metodo_verificacion = "Biometría"
+    elif "supervis" in met_lower:
+        metodo_verificacion = "Supervisado"
+    else:
+        metodo_verificacion = "Firma Electrónica"
 
     conn = None
     try:
@@ -648,6 +658,18 @@ def registrar_asistencia_estudiante_con_metodo(request: RegistroAsistenciaEstudi
     Registra asistencia de estudiante con método especificado (Biométrico o Supervisado)
     """
     print(f"[DEBUG] Registro estudiante: num_doc={request.num_doc}, horario_id={request.horario_id}, fecha={request.fecha}, hora={request.hora}, tipo={request.tipo}")
+    
+    metodo_raw = request.metodo_verificacion or ""
+    met_lower = metodo_raw.lower()
+    if "pin" in met_lower:
+        metodo_verificacion = "Firma Electrónica"
+    elif "huella" in met_lower or "biomet" in met_lower:
+        metodo_verificacion = "Biometría"
+    elif "supervis" in met_lower:
+        metodo_verificacion = "Supervisado"
+    else:
+        metodo_verificacion = "Firma Electrónica"
+
     conn = None
     try:
         conn = get_connection()
@@ -728,7 +750,7 @@ def registrar_asistencia_estudiante_con_metodo(request: RegistroAsistenciaEstudi
                 (horario_id, usuario_id, hora_entrada, metodo_verificacion, estado, aula, fecha, sesion_id)
                 VALUES (%s, %s, %s::timestamp, %s, 'inasistencia', %s, %s, %s)
                 RETURNING id
-            """, (request.horario_id, usuario_id, timestamp_evento, request.metodo_verificacion, aula, request.fecha, sesion_id))
+            """, (request.horario_id, usuario_id, timestamp_evento, metodo_verificacion, aula, request.fecha, sesion_id))
             
             conn.commit()
             
@@ -794,7 +816,7 @@ def registrar_asistencia_estudiante_con_metodo(request: RegistroAsistenciaEstudi
                     estado = %s,
                     metodo_verificacion = %s
                 WHERE id = %s
-            """, (timestamp_salida, estado_asistencia, request.metodo_verificacion, registro_previo['id']))
+            """, (timestamp_salida, estado_asistencia, metodo_verificacion, registro_previo['id']))
             
             conn.commit()
             
