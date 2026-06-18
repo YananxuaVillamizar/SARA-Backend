@@ -694,7 +694,8 @@ def registrar_asistencia_estudiante_con_metodo(request: RegistroAsistenciaEstudi
         cursor.execute("""
             SELECT id, aula, estado
             FROM sesiones_clase
-            WHERE horario_id = %s AND fecha = %s
+            WHERE horario_id = %s AND fecha = %s AND estado IN ('abierta', 'completa')
+            ORDER BY CASE estado WHEN 'abierta' THEN 0 ELSE 1 END
             LIMIT 1
         """, (request.horario_id, request.fecha))
         
