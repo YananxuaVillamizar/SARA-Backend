@@ -201,11 +201,13 @@ def buscar_usuario(request: BuscarUsuarioRequest):
                 "mensaje": "Este usuario no se encuentra activo"
             }
         
-        if not autoriza:
-            return {
-                "existe": False,
-                "mensaje": "Este usuario no autoriza biometria"
-            }
+        return {
+            "existe": True,
+            "id": usuario['id'],
+            "nombre_completo": nombre_completo,
+            "rol": usuario['rol'],
+            "autoriza_biometria": usuario['autoriza_biometria']
+        }
         
         nombre_completo = f"{usuario['nombres']} {usuario['apellidos']}"
         
