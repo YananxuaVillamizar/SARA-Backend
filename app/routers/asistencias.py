@@ -248,7 +248,13 @@ def listar_asistencias(docente_id: Optional[str] = None, usuario_id: Optional[st
                     
                 if isinstance(val_f, (datetime, date)) and isinstance(val_ini, (datetime, date)) and val_f < val_ini:
                     # Omitir registros de clases previas a su matrícula
-                    continue
+                    d['num_doc'] = None
+                    d['nombre_estudiante'] = None
+                    d['apellido_estudiante'] = None
+                    d['estado'] = 'N/A'
+                    d['metodo_verificacion'] = 'N/A'
+                    d['hora_entrada'] = None
+                    d['hora_salida'] = None
 
             if fecha_inicio_semestre and d.get('fecha'):
                 f = d['fecha']
